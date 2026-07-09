@@ -1,0 +1,22 @@
+# Never commit generated credentials, databases or certificates
+*.env
+*.db
+*.sqlite
+*.pem
+*.key
+*.log
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local Codex/runtime artifacts
+.agents/
+.codex/
+
+# Deprecated local drafts; keep the maintained installer files only
+install-boiler-node.sh
+configure-warp-ru.sh
+root@*
