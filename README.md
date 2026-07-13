@@ -36,7 +36,7 @@ chmod 700 /root/install-xhttp-vps.sh
 ## Запуск из GitHub
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/yazmann/xhttp-vpn-setup/main/install-xhttp-vps.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh)
 ```
 
 Для private-репозитория обычный `curl` без авторизации не сможет скачать файл с GitHub. В этом случае используйте загрузку через Termius/SFTP либо запускайте `curl` с GitHub token. Фотографии ожидаются в каталоге `assets/` репозитория; если нужного файла там пока нет, установщик автоматически использует оригинал Unsplash. Базовый адрес можно переопределить переменной `REPO_ASSET_BASE`.
