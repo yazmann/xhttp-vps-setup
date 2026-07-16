@@ -4,15 +4,18 @@ set -Eeuo pipefail
 green='\033[1;32m'; yellow='\033[1;33m'; red='\033[1;31m'; cyan='\033[1;36m'; blue='\033[1;34m'; plain='\033[0m'
 CURRENT_STEP='repair startup'
 die() {
+  local reason="$1" solution="${2:-Fix the reason above, then run: /root/finish-xhttp-vps.sh}"
   printf '\n%b================================================================%b\n' "$red" "$plain" >&2
   printf '%bREPAIR STOPPED%b\n' "$red" "$plain" >&2
-  printf '%bReason:%b %s\n%bCurrent step:%b %s\n' "$red" "$plain" "$*" "$yellow" "$plain" "$CURRENT_STEP" >&2
+  printf '%bReason:%b %s\n%bCurrent step:%b %s\n' "$red" "$plain" "$reason" "$yellow" "$plain" "$CURRENT_STEP" >&2
+  printf '%bSuggested solution:%b %s\n' "$yellow" "$plain" "$solution" >&2
   printf '%b================================================================%b\n' "$red" "$plain" >&2
   exit 1
 }
 unexpected_error() {
   local exit_code="$1" line="$2"
   printf '\n%bUNEXPECTED REPAIR ERROR:%b step "%s", line %s, exit code %s.\n' "$red" "$plain" "$CURRENT_STEP" "$line" "$exit_code" >&2
+  printf '%bSuggested solution:%b Fix the cause, then run: /root/finish-xhttp-vps.sh\n' "$yellow" "$plain" >&2
 }
 trap 'unexpected_error "$?" "$LINENO"' ERR
 [[ ${EUID} -eq 0 ]] || die "Run as root."

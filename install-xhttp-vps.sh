@@ -9,13 +9,27 @@ set -Eeuo pipefail
 
 green='\033[1;32m'; yellow='\033[1;33m'; red='\033[1;31m'; cyan='\033[1;36m'; blue='\033[1;34m'; plain='\033[0m'
 CURRENT_STEP='startup'
+INSTALLATION_STARTED=0
+RECOVERY_SCRIPT='/root/finish-xhttp-vps.sh'
 log() { CURRENT_STEP="$*"; printf '\n%b[%s]%b %b%s%b\n' "$blue" "$(date +'%H:%M:%S')" "$plain" "$cyan" "$*" "$plain"; }
 warn() { printf '\n%bWARNING%b %s\n' "$yellow" "$plain" "$*" >&2; }
+recovery_hint() {
+  local solution="${1:-}"
+  if [[ -n "$solution" ]]; then
+    printf '%bSuggested solution:%b %s\n' "$yellow" "$plain" "$solution" >&2
+  elif [[ "$INSTALLATION_STARTED" == 1 ]]; then
+    printf '%bSuggested solution:%b Fix the reason above, then run: %s\n' "$yellow" "$plain" "$RECOVERY_SCRIPT" >&2
+  else
+    printf '%bSuggested solution:%b Fix the reason above, then start this installer again. No existing service was changed automatically.\n' "$yellow" "$plain" >&2
+  fi
+}
 die() {
+  local reason="$1" solution="${2:-}"
   printf '\n%b================================================================%b\n' "$red" "$plain" >&2
   printf '%bINSTALLATION STOPPED%b\n' "$red" "$plain" >&2
-  printf '%bReason:%b %s\n' "$red" "$plain" "$*" >&2
+  printf '%bReason:%b %s\n' "$red" "$plain" "$reason" >&2
   printf '%bCurrent step:%b %s\n' "$yellow" "$plain" "$CURRENT_STEP" >&2
+  recovery_hint "$solution"
   printf '%b================================================================%b\n' "$red" "$plain" >&2
   exit 1
 }
@@ -25,7 +39,7 @@ unexpected_error() {
   printf '%bUNEXPECTED INSTALLATION ERROR%b\n' "$red" "$plain" >&2
   printf '%bStep:%b %s\n' "$yellow" "$plain" "$CURRENT_STEP" >&2
   printf '%bTechnical detail:%b command failed near line %s (exit code %s).\n' "$yellow" "$plain" "$line" "$exit_code" >&2
-  printf '%bKeep this terminal output and run finish-xhttp-vps.sh only after the cause is fixed.%b\n' "$yellow" "$plain" >&2
+  recovery_hint
   printf '%b================================================================%b\n' "$red" "$plain" >&2
 }
 trap 'unexpected_error "$?" "$LINENO"' ERR
@@ -278,6 +292,20 @@ if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -Eq "(^|[[:space:]
   UFW_SSH_RULE_EXISTED=1
 fi
 
+install_recovery_script() {
+  local temporary_file
+  temporary_file="${RECOVERY_SCRIPT}.new"
+  if curl -fL --retry 3 --connect-timeout 10 --max-time 60 \
+    https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh \
+    -o "$temporary_file"; then
+    chmod 700 "$temporary_file"
+    mv -f "$temporary_file" "$RECOVERY_SCRIPT"
+  else
+    rm -f "$temporary_file"
+    warn "Could not download the recovery script. If installation stops after this point, download finish-xhttp-vps.sh from the project and run it after fixing the reported cause."
+  fi
+}
+
 write_state() {
   umask 077
   cat > "$STATE_FILE" <<EOF
@@ -317,6 +345,10 @@ UFW_SSH_RULE_EXISTED=${UFW_SSH_RULE_EXISTED}
 PACKAGES_INSTALLED_BY_SCRIPT="${PACKAGES_INSTALLED_BY_SCRIPT# }"
 EOF
   chmod 600 "$STATE_FILE"
+  INSTALLATION_STARTED=1
+  if [[ ! -x "$RECOVERY_SCRIPT" ]]; then
+    install_recovery_script
+  fi
   umask 022
 }
 
@@ -953,7 +985,8 @@ if [[ "$CHECK_FAILURES" -ne 0 ]]; then
   printf '%bRESULT: %s CHECK(S) FAILED%b\n' "$red" "$CHECK_FAILURES" "$plain"
   printf '%bFix every line marked ERROR above before using the VPN or subscriptions.%b\n' "$yellow" "$plain"
   printf '%bSaved configuration:%b %s\n%bSaved result:%b        %s\n' "$yellow" "$plain" "$STATE_FILE" "$yellow" "$plain" "$RESULT_FILE"
-  printf '%bRecovery command after fixing the cause:%b /root/finish-xhttp-vps.sh\n' "$yellow" "$plain"
+  printf '%bSuggested solution:%b Review the failed checks, then run: %s\n' "$yellow" "$plain" "$RECOVERY_SCRIPT"
+  printf '%bDiagnostics:%b systemctl status x-ui nginx --no-pager; nginx -t; journalctl -u x-ui -n 100 --no-pager\n' "$yellow" "$plain"
   printf '%b================================================================%b\n' "$red" "$plain"
   exit 1
 fi
