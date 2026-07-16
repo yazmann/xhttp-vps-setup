@@ -195,8 +195,13 @@ read -rp "VPN name shown in subscriptions [${DEFAULT_VPN_NAME}]: " VPN_NAME
 VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 [[ ${#VPN_NAME} -ge 1 && ${#VPN_NAME} -le 64 ]] || die "VPN name must contain 1-64 characters."
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "VPN name contains control characters."; fi
-read -rp "Route *.ru and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
-[[ "${WARP_ANSWER:-y}" =~ ^[Nn]$ ]] && ENABLE_WARP=0 || ENABLE_WARP=1
+if [[ "$INSTALL_MODE" == "standalone" ]]; then
+  read -rp "Route *.ru and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
+  [[ "${WARP_ANSWER:-y}" =~ ^[Nn]$ ]] && ENABLE_WARP=0 || ENABLE_WARP=1
+else
+  ENABLE_WARP=0
+  printf '%bWARP routing:%b skipped for node mode; configure routing centrally in the main panel if needed.\n' "$cyan" "$plain"
+fi
 
 cat <<'EOF'
 Cover-site design:
@@ -807,8 +812,12 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       ]+((.routing.rules//[])|map(select(.outboundTag!="warp")))
   ' <<<"$XRAY")"
   RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
-  jq -e '.success == true' <<<"$RESPONSE" >/dev/null || die "WARP routing save failed: ${RESPONSE}"
-  WARP_CONFIGURED=1
+  if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
+    WARP_CONFIGURED=1
+  else
+    warn "WARP routing could not be saved and was skipped. The VPN installation will continue without WARP. Panel response: ${RESPONSE}"
+    ENABLE_WARP=0
+  fi
 fi
 
 systemctl restart x-ui

@@ -169,7 +169,10 @@ if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
     |.routing.rules=[{"type":"field","domain":["regexp:.*\\.ru$"],"outboundTag":"warp","network":"tcp,udp"},{"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp"}]+((.routing.rules//[])|map(select(.outboundTag!="warp")))' <<<"$X")"
   R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" \
     --data-urlencode "xraySetting=$X" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
-  jq -e '.success==true' <<<"$R" >/dev/null || die "WARP routing failed: $R"
+  if ! jq -e '.success==true' <<<"$R" >/dev/null; then
+    printf '%bWARNING:%b WARP routing could not be saved and was skipped. Continuing without WARP. Panel response: %s\n' "$yellow" "$plain" "$R" >&2
+    ENABLE_WARP=0
+  fi
 fi
 
 systemctl restart x-ui; sleep 2
