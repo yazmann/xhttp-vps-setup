@@ -267,9 +267,13 @@ PREV_IPV6_ALL="$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || ech
 PREV_IPV6_DEFAULT="$(cat /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null || echo 0)"
 PREV_IPV6_LO="$(cat /proc/sys/net/ipv6/conf/lo/disable_ipv6 2>/dev/null || echo 0)"
 UFW_WAS_ACTIVE=0
-command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active' && UFW_WAS_ACTIVE=1 || true
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  UFW_WAS_ACTIVE=1
+fi
 UFW_SSH_RULE_EXISTED=0
-command -v ufw >/dev/null && ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])(${SSH_PORT}/tcp|OpenSSH)([[:space:]]|$)" && UFW_SSH_RULE_EXISTED=1 || true
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])(${SSH_PORT}/tcp|OpenSSH)([[:space:]]|$)"; then
+  UFW_SSH_RULE_EXISTED=1
+fi
 
 write_state() {
   umask 077
