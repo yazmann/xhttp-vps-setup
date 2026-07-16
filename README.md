@@ -38,10 +38,11 @@ chmod 700 /root/install-xhttp-vps.sh
 
 ### WARP для российских ресурсов
 
-Во время установки есть явный выбор в обоих режимах: **Standalone VPN server** и **Node for an existing 3x-ui panel**.
+Во время установки в обоих режимах — **Standalone VPN server** и **Node for an existing 3x-ui panel** — скрипт задаёт один вопрос:
 
-1. **Do not configure WARP** — WARP не настраивается.
-2. **Route .ru domains and geoip:ru through WARP** — вариант по умолчанию. Установщик создаёт WARP outbound в локальной 3x-ui и направляет через него только домены в зоне `.ru` (включая поддомены) и IP-адреса из `geoip:ru`. Остальной трафик остаётся на обычном маршруте.
+`Route .ru domains and geoip:ru through Cloudflare WARP? [Y/n]`
+
+Enter или `yes` создают WARP outbound в локальной 3x-ui и направляют через него только домены в зоне `.ru` (включая поддомены) и IP-адреса из `geoip:ru`. `no` оставляет WARP выключенным; остальной трафик всегда остаётся на обычном маршруте.
 
 В node-режиме WARP и правила создаются на самой ноде: они влияют на трафик, который проходит через эту ноду, независимо от основной панели.
 
