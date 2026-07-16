@@ -190,11 +190,18 @@ DOMAIN="${DOMAIN,,}"
 
 DEFAULT_INSTANCE="$(hostname -s | tr -cd 'A-Za-z0-9_-')"
 INSTANCE_NAME="${DEFAULT_INSTANCE:-$([[ "$INSTALL_MODE" == "standalone" ]] && echo VPN1 || echo NODE1)}"
-DEFAULT_VPN_NAME="${DOMAIN%%.*} VPN"
-read -rp "VPN name shown in subscriptions [${DEFAULT_VPN_NAME}]: " VPN_NAME
+if [[ "$INSTALL_MODE" == "standalone" ]]; then
+  DEFAULT_VPN_NAME="${DOMAIN%%.*} VPN"
+  NAME_LABEL="VPN name"
+  read -rp "VPN name shown in subscriptions [${DEFAULT_VPN_NAME}]: " VPN_NAME
+else
+  DEFAULT_VPN_NAME="${DOMAIN%%.*} Node"
+  NAME_LABEL="Node name"
+  read -rp "Node name shown in the local 3x-ui panel [${DEFAULT_VPN_NAME}]: " VPN_NAME
+fi
 VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
-[[ ${#VPN_NAME} -ge 1 && ${#VPN_NAME} -le 64 ]] || die "VPN name must contain 1-64 characters."
-if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "VPN name contains control characters."; fi
+[[ ${#VPN_NAME} -ge 1 && ${#VPN_NAME} -le 64 ]] || die "${NAME_LABEL} must contain 1-64 characters."
+if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
   read -rp "Route *.ru and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
   [[ "${WARP_ANSWER:-y}" =~ ^[Nn]$ ]] && ENABLE_WARP=0 || ENABLE_WARP=1
@@ -361,7 +368,7 @@ cat <<EOF
 
 Configuration summary
   Mode:          $([[ "$INSTALL_MODE" == "standalone" ]] && echo "standalone VPN server" || echo "node for an existing panel")
-  VPN name:      ${VPN_NAME}
+  $([[ "$INSTALL_MODE" == "standalone" ]] && echo "VPN name" || echo "Node name"):      ${VPN_NAME}
   Host name:     ${INSTANCE_NAME}
   Ubuntu:        ${UBUNTU_VERSION} ($(uname -m))
   Domain/IP:     ${DOMAIN} / ${PUBLIC_IP}
@@ -981,7 +988,7 @@ umask 077
 {
   printf 'MODE: %s\n' "$INSTALL_MODE"
   printf 'TLS MODE: %s\n' "$TLS_MODE"
-  printf 'VPN NAME: %s\n' "$VPN_NAME"
+  printf '%s: %s\n' "$([[ "$INSTALL_MODE" == "standalone" ]] && echo "VPN NAME" || echo "NODE NAME")" "$VPN_NAME"
   printf 'PANEL URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
   printf 'LOGIN: %s\nPASSWORD: %s\n' "$PANEL_USERNAME" "$PANEL_PASSWORD"
   printf '%s\n' "$MODE_DETAILS"
@@ -1007,7 +1014,7 @@ printf '%b================================================================%b\n' 
 printf '%b                 VPN INSTALLATION COMPLETED SUCCESSFULLY%b\n' "$green" "$plain"
 printf '%b                     ALL CHECKS PASSED%b\n' "$green" "$plain"
 printf '%b================================================================%b\n\n' "$green" "$plain"
-printf '%bVPN:%b          %s\n' "$blue" "$plain" "$VPN_NAME"
+printf '%b%s:%b          %s\n' "$blue" "$([[ "$INSTALL_MODE" == "standalone" ]] && echo "VPN" || echo "NODE")" "$plain" "$VPN_NAME"
 printf '%bTLS:%b          %s\n\n' "$blue" "$plain" "$([[ "$TLS_MODE" == "production" ]] && echo "Trusted Let's Encrypt certificate" || echo "Test self-signed certificate")"
 printf '%bPANEL%b\n' "$cyan" "$plain"
 printf '  %bURL:%b      https://%s:%s/%s/\n' "$yellow" "$plain" "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
