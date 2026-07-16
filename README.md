@@ -4,7 +4,7 @@
 
 - 3x-ui + VLESS / XHTTP / REALITY на TCP/443
 - Nginx и сайт-заглушка
-- Let's Encrypt TLS или тестовый самоподписанный сертификат
+- Production Let's Encrypt TLS
 - Подписки для HAPP, INCY и Mihomo с RoscomVPN Routing
 - Опциональная маршрутизация `.ru` и `geoip:ru` через WARP
 - UFW, BBR + fq и отключение IPv6

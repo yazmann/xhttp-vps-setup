@@ -100,23 +100,8 @@ case "$ACTION" in
   *) die "Unknown menu item: $ACTION" ;;
 esac
 
-cat <<'EOF'
-
-TLS certificate mode:
-  1) Production — trusted Let's Encrypt certificate (final deployment)
-  2) Test — self-signed certificate, does not use Let's Encrypt limits
-EOF
-read -rp "Select [2]: " TLS_CHOICE
-TLS_CHOICE="${TLS_CHOICE:-2}"
-case "$TLS_CHOICE" in
-  1) TLS_MODE="production" ;;
-  2) TLS_MODE="test" ;;
-  *) die "Unknown TLS mode: $TLS_CHOICE" ;;
-esac
-if [[ "$TLS_MODE" == "test" ]]; then
-  warn "TEST MODE: HAPP/INCY and browsers may reject the self-signed certificate."
-  warn "Use production mode once for the final client test."
-fi
+TLS_MODE="production"
+printf '%bTLS:%b production Lets Encrypt certificate (required).\n' "$cyan" "$plain"
 
 [[ -r /etc/os-release ]] || die "Cannot identify the operating system."
 # shellcheck disable=SC1091
@@ -426,7 +411,7 @@ systemctl stop nginx || true
 port_busy 80 && die "TCP/80 is occupied."
 for p in "$PANEL_PORT" "$SUB_PORT" 443 "$FALLBACK_PORT"; do port_busy "$p" && die "TCP/${p} is occupied."; done
 XUI_VERSION="$(curl -fsS --max-time 10 https://api.github.com/repos/MHSanaei/3x-ui/releases/latest | jq -r '.tag_name // empty' || true)"
-XUI_VERSION="${XUI_VERSION:-v3.4.2}"
+[[ -n "$XUI_VERSION" ]] || die "Could not determine the current 3x-ui release from GitHub. Check VPS Internet access and try again."
 INSTALLER=/tmp/3x-ui-install.sh
 curl -fL --retry 3 https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh -o "$INSTALLER"
 chmod 700 "$INSTALLER"
@@ -435,7 +420,7 @@ if [[ "$TLS_MODE" == "production" ]]; then
     XUI_PASSWORD="$PANEL_PASSWORD" XUI_PANEL_PORT="$PANEL_PORT" XUI_WEB_BASE_PATH="$PANEL_PATH" \
     XUI_DB_TYPE=sqlite XUI_SSL_MODE=domain XUI_DOMAIN="$DOMAIN" XUI_ACME_HTTP_PORT=80 \
     bash "$INSTALLER" "$XUI_VERSION"
-  [[ -s "$CERT_DIR/fullchain.pem" && -s "$CERT_DIR/privkey.pem" ]] || die "Let's Encrypt certificate issuance failed."
+  [[ -s "$CERT_DIR/fullchain.pem" && -s "$CERT_DIR/privkey.pem" ]] || die "Let's Encrypt certificate issuance failed. Check DNS, Cloudflare DNS-only mode and TCP/80, then run /root/finish-xhttp-vps.sh."
 else
   XUI_NONINTERACTIVE=1 XUI_SERVER_IP="$PUBLIC_IP" XUI_USERNAME="$PANEL_USERNAME" \
     XUI_PASSWORD="$PANEL_PASSWORD" XUI_PANEL_PORT="$PANEL_PORT" XUI_WEB_BASE_PATH="$PANEL_PATH" \
