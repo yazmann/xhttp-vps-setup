@@ -69,6 +69,51 @@ build_warp_outbound() {
     '{tag:"warp",protocol:"wireguard",settings:{mtu:1420,secretKey:$private,address:$addresses,reserved:$reserved,domainStrategy:"ForceIPv4v6",peers:[{publicKey:$public,endpoint:$endpoint}],noKernelTun:true}}')" || return 1
 }
 
+configure_warp_swap() {
+  local memory_kib free_kib
+  memory_kib="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+  if ! [[ "$memory_kib" =~ ^[0-9]+$ ]] || (( memory_kib > 1100000 )); then
+    return 0
+  fi
+  if swapon --noheadings --show 2>/dev/null | grep -q .; then
+    printf '%b[STEP]%b Keeping existing swap for low-memory WARP VPS\n' "$cyan" "$plain"
+    return 0
+  fi
+  if [[ -e /swapfile ]]; then
+    printf '%bWARNING:%b Low-memory WARP VPS has /swapfile, but it is not active. The repair script will not modify an existing file.\n' "$yellow" "$plain" >&2
+    return 0
+  fi
+  free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
+  if ! [[ "$free_kib" =~ ^[0-9]+$ ]] || (( free_kib < 1310720 )); then
+    printf '%bWARNING:%b Low-memory WARP VPS has insufficient free disk space for the required 1 GiB swap.\n' "$yellow" "$plain" >&2
+    return 0
+  fi
+  printf '%b[STEP]%b Adding 1 GiB swap for low-memory WARP VPS\n' "$cyan" "$plain"
+  if ! fallocate -l 1G /swapfile; then
+    printf '%bWARNING:%b Could not allocate /swapfile; continuing without managed swap.\n' "$yellow" "$plain" >&2
+    return 0
+  fi
+  chmod 600 /swapfile
+  if ! mkswap /swapfile >/dev/null; then
+    rm -f /swapfile
+    printf '%bWARNING:%b Could not format /swapfile; continuing without managed swap.\n' "$yellow" "$plain" >&2
+    return 0
+  fi
+  if ! swapon /swapfile; then
+    rm -f /swapfile
+    printf '%bWARNING:%b Could not enable /swapfile; continuing without managed swap.\n' "$yellow" "$plain" >&2
+    return 0
+  fi
+  if ! printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab; then
+    swapoff /swapfile >/dev/null 2>&1 || true
+    rm -f /swapfile
+    printf '%bWARNING:%b Could not persist /swapfile in /etc/fstab; continuing without managed swap.\n' "$yellow" "$plain" >&2
+    return 0
+  fi
+  SWAP_CREATED_BY_SCRIPT=1
+  printf '\nSWAP_CREATED_BY_SCRIPT=1\n' >> "${STATE_FILES[0]}"
+}
+
 systemctl restart x-ui
 READY=0; R=""
 for _ in $(seq 1 15); do
@@ -184,6 +229,7 @@ else
   } >> "${STATE_FILES[0]}"
 fi
 
+WARP_CONFIGURED=0
 if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
   CURRENT_STEP='configuring built-in WARP and RU routing'
   printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
@@ -193,8 +239,7 @@ if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
     R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/reg" \
       --data-urlencode "privateKey=$PRIV" --data-urlencode "publicKey=$PUB")"
     if ! jq -e '.success==true' <<<"$R" >/dev/null; then
-      printf '%bWARNING:%b WARP registration failed and was skipped. Continuing without WARP. Panel response: %s\n' "$yellow" "$plain" "$R" >&2
-      ENABLE_WARP=0
+      die "WARP registration failed. WARP was requested, so repair cannot continue. Panel response: ${R}"
     fi
   fi
   if [[ "$ENABLE_WARP" -eq 1 ]]; then
@@ -203,21 +248,24 @@ if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
     WARP_DATA="$(jq -c '.obj|if type=="string" then fromjson else . end' <<<"$WARP_DATA_RESPONSE")"
     WARP_CONFIG="$(jq -c '.obj|if type=="string" then fromjson else . end' <<<"$WARP_CONFIG_RESPONSE")"
     if ! build_warp_outbound "$WARP_DATA" "$WARP_CONFIG"; then
-      printf '%bWARNING:%b WARP account data is incomplete and was skipped. Continuing without WARP.\n' "$yellow" "$plain" >&2
-      ENABLE_WARP=0
+      die "WARP account data is incomplete. WARP was requested, so repair cannot continue."
     else
       R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
       X="$(jq -c '.obj|if type=="string" then fromjson else . end|.xraySetting|if type=="string" then fromjson else . end' <<<"$R")"
       cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
       X="$(jq -c --argjson w "$WARP_OUT" '.outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
         |.routing=(.routing//{})|.routing.domainStrategy="IPIfNonMatch"
-        |.routing.rules=[{"type":"field","domain":["regexp:.*\\.ru$"],"outboundTag":"warp","network":"tcp,udp"},{"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp"}]+((.routing.rules//[])|map(select(.outboundTag!="warp")))' <<<"$X")"
+        |.routing.rules=[
+            {"type":"field","domain":["domain:ru"],"outboundTag":"warp","network":"tcp,udp","ruleTag":"xhttp-vps-warp-ru-domain"},
+            {"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp","ruleTag":"xhttp-vps-warp-ru-ip"}
+          ]+((.routing.rules//[])|map(select(.ruleTag!="xhttp-vps-warp-ru-domain" and .ruleTag!="xhttp-vps-warp-ru-ip")))' <<<"$X")"
       R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" \
         --data-urlencode "xraySetting=$X" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if ! jq -e '.success==true' <<<"$R" >/dev/null; then
-        printf '%bWARNING:%b WARP routing could not be saved and was skipped. Continuing without WARP. Panel response: %s\n' "$yellow" "$plain" "$R" >&2
-        ENABLE_WARP=0
+        die "WARP routing could not be saved. WARP was requested, so repair cannot continue. Panel response: ${R}"
       fi
+      WARP_CONFIGURED=1
+      configure_warp_swap
     fi
   fi
 fi
@@ -302,7 +350,21 @@ else
   report "Mihomo subscription" SKIP
 fi
 if command -v fail2ban-client >/dev/null; then if systemctl is-active --quiet fail2ban; then report "Fail2ban" OK; else report "Fail2ban" ERROR; fi; else report "Fail2ban" SKIP; fi
-if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then report "WARP RU routing" OK; else report "WARP RU routing" SKIP; fi
+if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
+  if [[ "$WARP_CONFIGURED" -eq 1 ]]; then report "WARP RU routing" OK; else report "WARP RU routing" ERROR; fi
+else
+  report "WARP RU routing" SKIP
+fi
+MEMORY_KIB_FINAL="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+if [[ "${ENABLE_WARP:-0}" -eq 1 && "$MEMORY_KIB_FINAL" =~ ^[0-9]+$ ]] && (( MEMORY_KIB_FINAL <= 1100000 )); then
+  if swapon --noheadings --show 2>/dev/null | grep -q .; then
+    report "Swap for low-memory WARP" OK
+  else
+    report "Swap for low-memory WARP" ERROR
+  fi
+else
+  report "Swap for low-memory WARP" SKIP
+fi
 printf '%b==========================================================%b\n' "$blue" "$plain"
 if [[ "$FAILED" -ne 0 ]]; then
   printf '%bRESULT: %s CHECK(S) FAILED%b\n' "$red" "$FAILED" "$plain"
