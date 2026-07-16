@@ -161,8 +161,11 @@ if ((${#EXISTING_STATES[@]} > 0)); then
 fi
 [[ ! -e /etc/x-ui/x-ui.db && ! -x /usr/local/x-ui/x-ui ]] \
   || die "3x-ui is already installed. To protect the existing panel, this installer will not overwrite it. Use a fresh VPS or remove the existing panel first."
-[[ ! -d /etc/nginx && ! -d /usr/local/nginx ]] \
-  || die "Nginx is already installed. To protect the existing website configuration, use a fresh VPS for this installer."
+if command -v nginx >/dev/null || \
+  dpkg-query -W -f='${db:Status-Status}\n' nginx 2>/dev/null | grep -qx 'installed' || \
+  [[ -x /usr/local/nginx/sbin/nginx ]]; then
+  die "Nginx is already installed. To protect the existing website configuration, use a fresh VPS for this installer."
+fi
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
   die "UFW is already active. To avoid changing an existing firewall policy, use a fresh VPS or disable and document the current rules before installation."
 fi
