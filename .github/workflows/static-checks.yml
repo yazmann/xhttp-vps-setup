@@ -1,0 +1,27 @@
+name: Static checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Check Bash syntax
+        run: |
+          bash -n install-xhttp-vps.sh
+          bash -n finish-xhttp-vps.sh
+      - name: Run ShellCheck
+        run: shellcheck --shell=bash --severity=warning install-xhttp-vps.sh finish-xhttp-vps.sh
+      - name: Keep TLS docs aligned
+        run: |
+          ! grep -Eqi 'self-signed|TLS MODE: test|Test —' TEST.md
+          grep -Fq 'production-сертификат' TEST.md
