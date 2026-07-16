@@ -40,12 +40,11 @@ remove_installation() {
   # shellcheck disable=SC1090
   source "${states[0]}"
   printf '%bThis removes the 3x-ui installation for %s and its generated data.%b\n' "$yellow" "$DOMAIN" "$plain"
-  read -rp "Type DELETE to continue: " answer
+  read -rp "Continue? [yes/NO]: " answer
   # Some SSH terminals send a carriage return or trailing whitespace with
-  # interactive input. Remove only whitespace, then keep the confirmation
-  # requirement explicit and case-sensitive.
+  # interactive input. Remove only whitespace, then accept an explicit yes.
   answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
-  [[ "$answer" == DELETE ]] || die "Removal cancelled."
+  [[ "$answer" == "yes" || "$answer" == "y" ]] || die "Removal cancelled."
   warn "Removal restores the configuration created by this script and removes packages it installed. Ubuntu security updates are intentionally kept."
 
   systemctl disable --now x-ui 2>/dev/null || true
