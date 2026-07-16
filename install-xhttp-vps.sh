@@ -892,8 +892,7 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
     PRIVATE_KEY="$(wg genkey)"; PUBLIC_KEY="$(printf '%s' "$PRIVATE_KEY" | wg pubkey)"
     RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/reg" --data-urlencode "privateKey=$PRIVATE_KEY" --data-urlencode "publicKey=$PUBLIC_KEY")"
     if ! jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
-      warn "WARP registration failed and was skipped. The VPN installation will continue without WARP. Panel response: ${RESPONSE}"
-      ENABLE_WARP=0
+      die "WARP registration failed. WARP was requested, so installation cannot continue. Panel response: ${RESPONSE}"
     fi
   fi
   if [[ "$ENABLE_WARP" -eq 1 ]]; then
@@ -902,8 +901,7 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
     WARP_DATA="$(jq -c '.obj | if type=="string" then fromjson else . end' <<<"$WARP_DATA_RESPONSE")"
     WARP_CONFIG="$(jq -c '.obj | if type=="string" then fromjson else . end' <<<"$WARP_CONFIG_RESPONSE")"
     if ! build_warp_outbound "$WARP_DATA" "$WARP_CONFIG"; then
-      warn "WARP account data is incomplete and was skipped. The VPN installation will continue without WARP."
-      ENABLE_WARP=0
+      die "WARP account data is incomplete. WARP was requested, so installation cannot continue."
     else
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
       XRAY="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$RESPONSE")"
@@ -921,8 +919,7 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
         WARP_CONFIGURED=1
         configure_warp_swap
       else
-        warn "WARP routing could not be saved and was skipped. The VPN installation will continue without WARP. Panel response: ${RESPONSE}"
-        ENABLE_WARP=0
+        die "WARP routing could not be saved. WARP was requested, so installation cannot continue. Panel response: ${RESPONSE}"
       fi
     fi
   fi
