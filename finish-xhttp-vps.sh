@@ -43,6 +43,11 @@ if [[ -r /etc/x-ui/install-result.env ]]; then
   PANEL_API_TOKEN="${XUI_API_TOKEN:-${PANEL_API_TOKEN:-}}"
   PANEL_PATH="${PANEL_PATH#/}"; PANEL_PATH="${PANEL_PATH%/}"
 fi
+# Prefer the token reported by the running panel: install-result.env can hold
+# an earlier token after a reinstall or a panel-side rotation.
+CURRENT_API_TOKEN="$(/usr/local/x-ui/x-ui setting -getApiToken true 2>/dev/null \
+  | awk -F': ' '/apiToken:/{gsub(/[[:space:]]/, "", $2); print $2; exit}')"
+[[ -n "$CURRENT_API_TOKEN" ]] && PANEL_API_TOKEN="$CURRENT_API_TOKEN"
 for cmd in curl jq wg; do command -v "$cmd" >/dev/null || die "Missing command: $cmd"; done
 [[ -n "${PANEL_API_TOKEN:-}" ]] || die "State/install-result does not contain the 3x-ui API token."
 
