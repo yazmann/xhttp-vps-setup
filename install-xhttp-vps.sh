@@ -206,8 +206,8 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   read -rp "Route *.ru and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
   [[ "${WARP_ANSWER:-y}" =~ ^[Nn]$ ]] && ENABLE_WARP=0 || ENABLE_WARP=1
 else
-  ENABLE_WARP=0
-  printf '%bWARP routing:%b skipped for node mode; configure routing centrally in the main panel if needed.\n' "$cyan" "$plain"
+  read -rp "Route *.ru and geoip:ru through Cloudflare WARP on this node? [y/N]: " WARP_ANSWER
+  [[ "${WARP_ANSWER:-n}" =~ ^[Yy]$ ]] && ENABLE_WARP=1 || ENABLE_WARP=0
 fi
 
 cat <<'EOF'
@@ -694,6 +694,25 @@ fi
 
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
+
+build_warp_outbound() {
+  local data_json="$1" config_json="$2" private_key client_id peer_key endpoint addresses reserved
+  WARP_OUT=""
+  private_key="$(jq -r '.private_key // empty' <<<"$data_json")"
+  client_id="$(jq -r '.client_id // empty' <<<"$data_json")"
+  peer_key="$(jq -r '.config.peers[0].public_key // empty' <<<"$config_json")"
+  endpoint="$(jq -r '.config.peers[0].endpoint.host // empty' <<<"$config_json")"
+  addresses="$(jq -nc --arg v4 "$(jq -r '.config.interface.addresses.v4 // empty' <<<"$config_json")" \
+    --arg v6 "$(jq -r '.config.interface.addresses.v6 // empty' <<<"$config_json")" \
+    '[$v4, $v6 | select(length > 0) | if contains(":") then . + "/128" else . + "/32" end]')"
+  [[ -n "$private_key" && -n "$client_id" && -n "$peer_key" && -n "$endpoint" && "$addresses" != "[]" ]] || return 1
+  reserved="$(printf '%s' "$client_id" | base64 -d 2>/dev/null | od -An -tu1 | awk 'BEGIN { printf "[" } { for (i=1; i<=NF; i++) { if (n++) printf ","; printf $i } } END { print "]" }')" || return 1
+  [[ "$reserved" != "[]" ]] || return 1
+  WARP_OUT="$(jq -nc --arg private "$private_key" --arg public "$peer_key" --arg endpoint "$endpoint" \
+    --argjson addresses "$addresses" --argjson reserved "$reserved" \
+    '{tag:"warp",protocol:"wireguard",settings:{mtu:1420,secretKey:$private,address:$addresses,reserved:$reserved,domainStrategy:"ForceIPv4v6",peers:[{publicKey:$public,endpoint:$endpoint}],noKernelTun:true}}')" || return 1
+}
+
 log "Waiting for the private IPv4 panel API and verifying its bearer token"
 API_READY=0; RESPONSE=""; API_HTTP_CODE="000"
 for _ in $(seq 1 15); do
@@ -803,27 +822,39 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
   if ! jq -e '.success == true and .obj != null and .obj != ""' <<<"$RESPONSE" >/dev/null; then
     PRIVATE_KEY="$(wg genkey)"; PUBLIC_KEY="$(printf '%s' "$PRIVATE_KEY" | wg pubkey)"
     RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/reg" --data-urlencode "privateKey=$PRIVATE_KEY" --data-urlencode "publicKey=$PUBLIC_KEY")"
-    jq -e '.success == true' <<<"$RESPONSE" >/dev/null || die "WARP registration failed: ${RESPONSE}"
+    if ! jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
+      warn "WARP registration failed and was skipped. The VPN installation will continue without WARP. Panel response: ${RESPONSE}"
+      ENABLE_WARP=0
+    fi
   fi
-  RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/config")"
-  WARP_OUT="$(jq -c '.obj | if type=="string" then fromjson else . end | .tag="warp"' <<<"$RESPONSE")"
-  RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
-  XRAY="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$RESPONSE")"
-  cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
-  XRAY="$(jq -c --argjson w "$WARP_OUT" '
-    .outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
-    | .routing=(.routing//{}) | .routing.domainStrategy="IPIfNonMatch"
-    | .routing.rules=[
-        {"type":"field","domain":["regexp:.*\\.ru$"],"outboundTag":"warp","network":"tcp,udp"},
-        {"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp"}
-      ]+((.routing.rules//[])|map(select(.outboundTag!="warp")))
-  ' <<<"$XRAY")"
-  RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
-  if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
-    WARP_CONFIGURED=1
-  else
-    warn "WARP routing could not be saved and was skipped. The VPN installation will continue without WARP. Panel response: ${RESPONSE}"
-    ENABLE_WARP=0
+  if [[ "$ENABLE_WARP" -eq 1 ]]; then
+    WARP_DATA_RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/data")"
+    WARP_CONFIG_RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/config")"
+    WARP_DATA="$(jq -c '.obj | if type=="string" then fromjson else . end' <<<"$WARP_DATA_RESPONSE")"
+    WARP_CONFIG="$(jq -c '.obj | if type=="string" then fromjson else . end' <<<"$WARP_CONFIG_RESPONSE")"
+    if ! build_warp_outbound "$WARP_DATA" "$WARP_CONFIG"; then
+      warn "WARP account data is incomplete and was skipped. The VPN installation will continue without WARP."
+      ENABLE_WARP=0
+    else
+      RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
+      XRAY="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$RESPONSE")"
+      cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
+      XRAY="$(jq -c --argjson w "$WARP_OUT" '
+        .outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
+        | .routing=(.routing//{}) | .routing.domainStrategy="IPIfNonMatch"
+        | .routing.rules=[
+            {"type":"field","domain":["regexp:.*\\.ru$"],"outboundTag":"warp","network":"tcp,udp"},
+            {"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp"}
+          ]+((.routing.rules//[])|map(select(.outboundTag!="warp")))
+      ' <<<"$XRAY")"
+      RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
+      if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
+        WARP_CONFIGURED=1
+      else
+        warn "WARP routing could not be saved and was skipped. The VPN installation will continue without WARP. Panel response: ${RESPONSE}"
+        ENABLE_WARP=0
+      fi
+    fi
   fi
 fi
 

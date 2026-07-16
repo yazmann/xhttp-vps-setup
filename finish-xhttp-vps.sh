@@ -49,6 +49,25 @@ for cmd in curl jq wg; do command -v "$cmd" >/dev/null || die "Missing command: 
 /usr/local/x-ui/x-ui setting -listenIP 127.0.0.1 -resetTwoFactor=true >/dev/null
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
+
+build_warp_outbound() {
+  local data_json="$1" config_json="$2" private_key client_id peer_key endpoint addresses reserved
+  WARP_OUT=""
+  private_key="$(jq -r '.private_key // empty' <<<"$data_json")"
+  client_id="$(jq -r '.client_id // empty' <<<"$data_json")"
+  peer_key="$(jq -r '.config.peers[0].public_key // empty' <<<"$config_json")"
+  endpoint="$(jq -r '.config.peers[0].endpoint.host // empty' <<<"$config_json")"
+  addresses="$(jq -nc --arg v4 "$(jq -r '.config.interface.addresses.v4 // empty' <<<"$config_json")" \
+    --arg v6 "$(jq -r '.config.interface.addresses.v6 // empty' <<<"$config_json")" \
+    '[$v4, $v6 | select(length > 0) | if contains(":") then . + "/128" else . + "/32" end]')"
+  [[ -n "$private_key" && -n "$client_id" && -n "$peer_key" && -n "$endpoint" && "$addresses" != "[]" ]] || return 1
+  reserved="$(printf '%s' "$client_id" | base64 -d 2>/dev/null | od -An -tu1 | awk 'BEGIN { printf "[" } { for (i=1; i<=NF; i++) { if (n++) printf ","; printf $i } } END { print "]" }')" || return 1
+  [[ "$reserved" != "[]" ]] || return 1
+  WARP_OUT="$(jq -nc --arg private "$private_key" --arg public "$peer_key" --arg endpoint "$endpoint" \
+    --argjson addresses "$addresses" --argjson reserved "$reserved" \
+    '{tag:"warp",protocol:"wireguard",settings:{mtu:1420,secretKey:$private,address:$addresses,reserved:$reserved,domainStrategy:"ForceIPv4v6",peers:[{publicKey:$public,endpoint:$endpoint}],noKernelTun:true}}')" || return 1
+}
+
 systemctl restart x-ui
 READY=0; R=""
 for _ in $(seq 1 15); do
@@ -157,21 +176,33 @@ if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
     PRIV="$(wg genkey)"; PUB="$(printf '%s' "$PRIV"|wg pubkey)"
     R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/reg" \
       --data-urlencode "privateKey=$PRIV" --data-urlencode "publicKey=$PUB")"
-    jq -e '.success==true' <<<"$R" >/dev/null || die "WARP registration failed: $R"
+    if ! jq -e '.success==true' <<<"$R" >/dev/null; then
+      printf '%bWARNING:%b WARP registration failed and was skipped. Continuing without WARP. Panel response: %s\n' "$yellow" "$plain" "$R" >&2
+      ENABLE_WARP=0
+    fi
   fi
-  R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/config")"
-  W="$(jq -c '.obj|if type=="string" then fromjson else . end|.tag="warp"' <<<"$R")"
-  R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
-  X="$(jq -c '.obj|if type=="string" then fromjson else . end|.xraySetting|if type=="string" then fromjson else . end' <<<"$R")"
-  cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
-  X="$(jq -c --argjson w "$W" '.outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
-    |.routing=(.routing//{})|.routing.domainStrategy="IPIfNonMatch"
-    |.routing.rules=[{"type":"field","domain":["regexp:.*\\.ru$"],"outboundTag":"warp","network":"tcp,udp"},{"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp"}]+((.routing.rules//[])|map(select(.outboundTag!="warp")))' <<<"$X")"
-  R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" \
-    --data-urlencode "xraySetting=$X" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
-  if ! jq -e '.success==true' <<<"$R" >/dev/null; then
-    printf '%bWARNING:%b WARP routing could not be saved and was skipped. Continuing without WARP. Panel response: %s\n' "$yellow" "$plain" "$R" >&2
-    ENABLE_WARP=0
+  if [[ "$ENABLE_WARP" -eq 1 ]]; then
+    WARP_DATA_RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/data")"
+    WARP_CONFIG_RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/config")"
+    WARP_DATA="$(jq -c '.obj|if type=="string" then fromjson else . end' <<<"$WARP_DATA_RESPONSE")"
+    WARP_CONFIG="$(jq -c '.obj|if type=="string" then fromjson else . end' <<<"$WARP_CONFIG_RESPONSE")"
+    if ! build_warp_outbound "$WARP_DATA" "$WARP_CONFIG"; then
+      printf '%bWARNING:%b WARP account data is incomplete and was skipped. Continuing without WARP.\n' "$yellow" "$plain" >&2
+      ENABLE_WARP=0
+    else
+      R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
+      X="$(jq -c '.obj|if type=="string" then fromjson else . end|.xraySetting|if type=="string" then fromjson else . end' <<<"$R")"
+      cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
+      X="$(jq -c --argjson w "$WARP_OUT" '.outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
+        |.routing=(.routing//{})|.routing.domainStrategy="IPIfNonMatch"
+        |.routing.rules=[{"type":"field","domain":["regexp:.*\\.ru$"],"outboundTag":"warp","network":"tcp,udp"},{"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp"}]+((.routing.rules//[])|map(select(.outboundTag!="warp")))' <<<"$X")"
+      R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" \
+        --data-urlencode "xraySetting=$X" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
+      if ! jq -e '.success==true' <<<"$R" >/dev/null; then
+        printf '%bWARNING:%b WARP routing could not be saved and was skipped. Continuing without WARP. Panel response: %s\n' "$yellow" "$plain" "$R" >&2
+        ENABLE_WARP=0
+      fi
+    fi
   fi
 fi
 
