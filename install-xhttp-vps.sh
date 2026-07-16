@@ -33,19 +33,27 @@ trap 'unexpected_error "$?" "$LINENO"' ERR
 [[ ${EUID} -eq 0 ]] || die "Run as root."
 
 remove_installation() {
-  local keep_script="${1:-0}" script_path
+  local keep_script="${1:-0}" script_path answer shown_answer
   script_path="$(readlink -f "$0")"
   mapfile -t states < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
   [[ ${#states[@]} -eq 1 ]] || die "Expected one 3x-ui installer state file in /root; found ${#states[@]}."
   # shellcheck disable=SC1090
   source "${states[0]}"
   printf '%bThis removes the 3x-ui installation for %s and its generated data.%b\n' "$yellow" "$DOMAIN" "$plain"
-  read -r -p "Continue? [yes/NO]: " answer
+  if ! read -r -p "Continue? [yes/NO]: " answer; then
+    die "VPS preparation cancelled: no confirmation was received from the terminal. Re-run the script and enter yes."
+  fi
   # Strip a possible carriage return from an SSH terminal and normalise case.
   # Bash is required by this installer, and Ubuntu ships Bash 4+.
   answer="${answer//$'\r'/}"
   answer="${answer,,}"
-  [[ "$answer" == "yes" || "$answer" == "y" ]] || die "Removal cancelled."
+  if [[ "$answer" != "yes" && "$answer" != "y" ]]; then
+    if [[ -z "$answer" ]]; then
+      die "VPS preparation cancelled: an empty answer was entered. Type yes (or y) to continue."
+    fi
+    printf -v shown_answer '%q' "$answer"
+    die "VPS preparation cancelled: expected yes or y, but received ${shown_answer}."
+  fi
   warn "Removal restores the configuration created by this script and removes packages it installed. Ubuntu security updates are intentionally kept."
 
   systemctl disable --now x-ui 2>/dev/null || true
