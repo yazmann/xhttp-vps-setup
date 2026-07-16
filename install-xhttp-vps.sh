@@ -41,7 +41,10 @@ remove_installation() {
   source "${states[0]}"
   printf '%bThis removes the 3x-ui installation for %s and its generated data.%b\n' "$yellow" "$DOMAIN" "$plain"
   read -rp "Type DELETE to continue: " answer
-  answer="${answer//$'\r'/}"
+  # Some SSH terminals send a carriage return or trailing whitespace with
+  # interactive input. Remove only whitespace, then keep the confirmation
+  # requirement explicit and case-sensitive.
+  answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
   [[ "$answer" == DELETE ]] || die "Removal cancelled."
   warn "Removal restores the configuration created by this script and removes packages it installed. Ubuntu security updates are intentionally kept."
 
