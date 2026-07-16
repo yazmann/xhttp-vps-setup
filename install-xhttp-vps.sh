@@ -7,10 +7,28 @@ set -Eeuo pipefail
 # XTLS/Xray or Cloudflare. Third-party names remain their owners' property.
 # See THIRD_PARTY_NOTICES.md in the project repository.
 
-green='\033[1;32m'; yellow='\033[1;33m'; red='\033[1;31m'; plain='\033[0m'
-log() { printf '\n%b[%s]%b %s\n' "$green" "$(date +'%H:%M:%S')" "$plain" "$*"; }
-warn() { printf '%bWARNING:%b %s\n' "$yellow" "$plain" "$*" >&2; }
-die() { printf '%bERROR:%b %s\n' "$red" "$plain" "$*" >&2; exit 1; }
+green='\033[1;32m'; yellow='\033[1;33m'; red='\033[1;31m'; cyan='\033[1;36m'; blue='\033[1;34m'; plain='\033[0m'
+CURRENT_STEP='startup'
+log() { CURRENT_STEP="$*"; printf '\n%b[%s]%b %b%s%b\n' "$blue" "$(date +'%H:%M:%S')" "$plain" "$cyan" "$*" "$plain"; }
+warn() { printf '\n%bWARNING%b %s\n' "$yellow" "$plain" "$*" >&2; }
+die() {
+  printf '\n%b================================================================%b\n' "$red" "$plain" >&2
+  printf '%bINSTALLATION STOPPED%b\n' "$red" "$plain" >&2
+  printf '%bReason:%b %s\n' "$red" "$plain" "$*" >&2
+  printf '%bCurrent step:%b %s\n' "$yellow" "$plain" "$CURRENT_STEP" >&2
+  printf '%b================================================================%b\n' "$red" "$plain" >&2
+  exit 1
+}
+unexpected_error() {
+  local exit_code="$1" line="$2"
+  printf '\n%b================================================================%b\n' "$red" "$plain" >&2
+  printf '%bUNEXPECTED INSTALLATION ERROR%b\n' "$red" "$plain" >&2
+  printf '%bStep:%b %s\n' "$yellow" "$plain" "$CURRENT_STEP" >&2
+  printf '%bTechnical detail:%b command failed near line %s (exit code %s).\n' "$yellow" "$plain" "$line" "$exit_code" >&2
+  printf '%bKeep this terminal output and run finish-xhttp-vps.sh only after the cause is fixed.%b\n' "$yellow" "$plain" >&2
+  printf '%b================================================================%b\n' "$red" "$plain" >&2
+}
+trap 'unexpected_error "$?" "$LINENO"' ERR
 
 [[ ${EUID} -eq 0 ]] || die "Run as root."
 
@@ -24,6 +42,7 @@ remove_installation() {
   printf '%bThis removes the 3x-ui installation for %s and its generated data.%b\n' "$yellow" "$DOMAIN" "$plain"
   read -rp "Type DELETE to continue: " answer
   [[ "$answer" == DELETE ]] || die "Removal cancelled."
+  warn "Removal restores the configuration created by this script and removes packages it installed. Ubuntu security updates are intentionally kept."
 
   systemctl disable --now x-ui 2>/dev/null || true
   systemctl disable --now nginx 2>/dev/null || true
@@ -53,6 +72,7 @@ remove_installation() {
   [[ "${UFW_WAS_ACTIVE:-1}" == 1 ]] || ufw --force disable >/dev/null 2>&1 || true
 
   rm -f /etc/modules-load.d/bbr.conf /etc/sysctl.d/99-xhttp-vps-network.conf /etc/sysctl.d/99-3xui-node-network.conf
+  rm -f /etc/apt/apt.conf.d/52xhttp-vps-auto-upgrades /etc/apt/apt.conf.d/53xhttp-vps-unattended-upgrades
   sysctl -w "net.core.default_qdisc=${PREV_QDISC:-fq_codel}" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.tcp_congestion_control=${PREV_CC:-cubic}" >/dev/null 2>&1 || true
   sysctl -w "net.ipv6.conf.all.disable_ipv6=${PREV_IPV6_ALL:-0}" >/dev/null 2>&1 || true
@@ -65,11 +85,11 @@ remove_installation() {
     apt-get purge -y $PACKAGES_INSTALLED_BY_SCRIPT || true
     apt-get autoremove -y || true
   fi
-  printf '%bRemoval complete.%b The VPN installation, generated data and recorded system changes were removed.\n' "$green" "$plain"
+  printf '%bRemoval complete.%b The VPN installation, generated data and recorded configuration changes were removed. Ubuntu package updates were kept for security.\n' "$green" "$plain"
   rm -f "$script_path"
 }
 
-printf '\nInstallation mode:\n1) Standalone VPN server\n2) Node for an existing 3x-ui panel\n3) Remove this script installation\n0) Exit\n'
+printf '\nInstallation mode:\n1) Standalone VPN server\n2) Node for an existing 3x-ui panel\n3) Remove every change made by this script\n0) Exit\n'
 read -rp "Select [1]: " ACTION
 ACTION="${ACTION:-1}"
 case "$ACTION" in
@@ -118,8 +138,17 @@ case "$(uname -m)" in
   x86_64|amd64|aarch64|arm64|armv7l|s390x) ;;
   *) die "Unsupported CPU architecture: $(uname -m)" ;;
 esac
+mapfile -t EXISTING_STATES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
+if ((${#EXISTING_STATES[@]} > 0)); then
+  die "This VPS already has an installation managed by this script. Select menu item 3 to remove it, or run /root/finish-xhttp-vps.sh to repair an interrupted installation."
+fi
 [[ ! -e /etc/x-ui/x-ui.db && ! -x /usr/local/x-ui/x-ui ]] \
-  || die "3x-ui is already installed. This installer is for a fresh VPS only."
+  || die "3x-ui is already installed. To protect the existing panel, this installer will not overwrite it. Use a fresh VPS or remove the existing panel first."
+[[ ! -d /etc/nginx && ! -d /usr/local/nginx ]] \
+  || die "Nginx is already installed. To protect the existing website configuration, use a fresh VPS for this installer."
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  die "UFW is already active. To avoid changing an existing firewall policy, use a fresh VPS or disable and document the current rules before installation."
+fi
 
 read -rp "Domain already pointed to this VPS (example: vpn.example.com): " DOMAIN
 DOMAIN="${DOMAIN,,}"
@@ -292,7 +321,7 @@ UBUNTU_UPGRADE_OK=1
 
 log "Checking availability and installing required packages"
 
-REQUIRED_PACKAGES=(ca-certificates curl iproute2 jq nginx openssl procps socat sqlite3 tar ufw unzip wget wireguard-tools)
+REQUIRED_PACKAGES=(ca-certificates curl iproute2 jq nginx openssl procps socat sqlite3 tar ufw unattended-upgrades unzip wget wireguard-tools)
 OPTIONAL_PACKAGES=(fail2ban htop lsof)
 INSTALL_PACKAGES=()
 MISSING_PACKAGES=()
@@ -334,6 +363,17 @@ write_state
 for command in curl dig ip jq nginx openssl ss sqlite3 sysctl systemctl ufw wg; do
   command -v "$command" >/dev/null || die "Package installation completed, but required command '${command}' is missing."
 done
+log "Enabling daily Ubuntu security updates without automatic reboot"
+cat > /etc/apt/apt.conf.d/52xhttp-vps-auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+cat > /etc/apt/apt.conf.d/53xhttp-vps-unattended-upgrades <<'EOF'
+// Managed by the XHTTP VPS installer. Official Ubuntu security updates only.
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+EOF
+systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
 log "Enabling BBR and disabling IPv6"
 cat > /etc/modules-load.d/bbr.conf <<'EOF'
 tcp_bbr
@@ -790,6 +830,7 @@ status_line() {
 printf '\n==================== INSTALLATION AUDIT ====================\n'
 if [[ "${UBUNTU_UPGRADE_OK:-0}" -eq 1 ]] && apt-get check >/dev/null 2>&1 && [[ -z "$(dpkg --audit)" ]]; then status_line "Ubuntu package upgrade" OK "Ubuntu $UBUNTU_VERSION"; else status_line "Ubuntu package upgrade" ERROR; fi
 if apt-get check >/dev/null 2>&1 && [[ -z "$(dpkg --audit)" ]]; then status_line "Required packages" OK; else status_line "Required packages" ERROR; fi
+if systemctl is-enabled --quiet apt-daily.timer && systemctl is-enabled --quiet apt-daily-upgrade.timer && [[ -r /etc/apt/apt.conf.d/52xhttp-vps-auto-upgrades ]]; then status_line "Daily security updates" OK "automatic reboot disabled"; else status_line "Daily security updates" ERROR; fi
 if [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == bbr && "$(sysctl -n net.core.default_qdisc)" == fq ]]; then status_line "BBR + fq" OK; else status_line "BBR + fq" ERROR; fi
 if [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" == 1 ]]; then status_line "IPv6 disabled" OK; else status_line "IPv6 disabled" ERROR; fi
 if printf '%s\n' "$(dig +short A "$DOMAIN")" | grep -Fxq "$PUBLIC_IP" && ! dig +short AAAA "$DOMAIN" | grep -q .; then status_line "DNS A / AAAA" OK "$DOMAIN → $PUBLIC_IP"; else status_line "DNS A / AAAA" ERROR; fi
@@ -864,32 +905,43 @@ umask 077
 chmod 600 "$RESULT_FILE"
 umask 022
 
-cat <<EOF
+if [[ "$CHECK_FAILURES" -ne 0 ]]; then
+  printf '\n%b================================================================%b\n' "$red" "$plain"
+  printf '%bRESULT: %s CHECK(S) FAILED%b\n' "$red" "$CHECK_FAILURES" "$plain"
+  printf '%bFix every line marked ERROR above before using the VPN or subscriptions.%b\n' "$yellow" "$plain"
+  printf '%bSaved configuration:%b %s\n%bSaved result:%b        %s\n' "$yellow" "$plain" "$STATE_FILE" "$yellow" "$plain" "$RESULT_FILE"
+  printf '%bRecovery command after fixing the cause:%b /root/finish-xhttp-vps.sh\n' "$yellow" "$plain"
+  printf '%b================================================================%b\n' "$red" "$plain"
+  exit 1
+fi
 
-================================================================
-RESULT: $([[ "$CHECK_FAILURES" -eq 0 ]] && echo 'ALL CHECKS PASSED' || echo "$CHECK_FAILURES CHECK(S) FAILED")
-VPN: ${VPN_NAME}
-TLS MODE: ${TLS_MODE}
-================================================================
-PANEL URL:   https://${DOMAIN}:${PANEL_PORT}/${PANEL_PATH}/
-LOGIN:       ${PANEL_USERNAME}
-PASSWORD:    ${PANEL_PASSWORD}
-SUBSCRIPTION BASE: https://${DOMAIN}/${SUB_PATH}/
-SAVED COPY:  ${STATE_FILE}
-RESULT FILE: ${RESULT_FILE}
-
-${MODE_DETAILS}
-
-Inbound:
-  VLESS | port 443 | XHTTP | REALITY | enabled
-  XHTTP host: ${DOMAIN} | path: / | mode: auto
-  REALITY dest: 127.0.0.1:${FALLBACK_PORT}
-  SNI: ${DOMAIN} | SpiderX: / | Xver: 0
-
-WARP RU routing: $([[ "$ENABLE_WARP" -eq 1 ]] && echo ENABLED || echo DISABLED)
-$([[ "$TLS_MODE" == "test" ]] && echo "TEST WARNING: subscriptions are generated, but HAPP/INCY may reject the self-signed HTTPS certificate." || echo "TLS: Trusted Let's Encrypt certificate; subscriptions are ready for client testing.")
-$([[ -f /var/run/reboot-required ]] && echo "REBOOT: Recommended to activate all Ubuntu updates." || echo "REBOOT: Not required by Ubuntu.")
-================================================================
-EOF
-
-[[ "$CHECK_FAILURES" -eq 0 ]] || exit 1
+# On success, remove the noisy installation transcript from the visible terminal.
+# Credentials and subscription URLs are retained in the protected result file above.
+clear || true
+printf '%b================================================================%b\n' "$green" "$plain"
+printf '%b                 VPN INSTALLATION COMPLETED SUCCESSFULLY%b\n' "$green" "$plain"
+printf '%b                     ALL CHECKS PASSED%b\n' "$green" "$plain"
+printf '%b================================================================%b\n\n' "$green" "$plain"
+printf '%bVPN:%b          %s\n' "$blue" "$plain" "$VPN_NAME"
+printf '%bTLS:%b          %s\n\n' "$blue" "$plain" "$([[ "$TLS_MODE" == "production" ]] && echo "Trusted Let's Encrypt certificate" || echo "Test self-signed certificate")"
+printf '%bPANEL%b\n' "$cyan" "$plain"
+printf '  %bURL:%b      https://%s:%s/%s/\n' "$yellow" "$plain" "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
+printf '  %bLogin:%b    %s\n' "$yellow" "$plain" "$PANEL_USERNAME"
+printf '  %bPassword:%b %s\n\n' "$yellow" "$plain" "$PANEL_PASSWORD"
+if [[ "$INSTALL_MODE" == "standalone" ]]; then
+  printf '%bCLIENT SUBSCRIPTIONS%b\n' "$cyan" "$plain"
+  printf '  %bHAPP / INCY:%b %s\n' "$yellow" "$plain" "$SUBSCRIPTION_URL"
+  printf '  %bMihomo:%b      %s\n' "$yellow" "$plain" "$MIHOMO_SUBSCRIPTION_URL"
+  printf '  %bRouting:%b     HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$yellow" "$plain"
+else
+  printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "${PANEL_API_TOKEN:-not provided by this 3x-ui version}"
+fi
+printf '%bVPN inbound:%b VLESS + XHTTP + REALITY on TCP/443\n' "$blue" "$plain"
+printf '%bWARP routing:%b %s\n' "$blue" "$plain" "$([[ "$ENABLE_WARP" -eq 1 ]] && echo ENABLED || echo DISABLED)"
+printf '%bSaved result:%b %s\n' "$blue" "$plain" "$RESULT_FILE"
+printf '%bSaved state:%b  %s\n' "$blue" "$plain" "$STATE_FILE"
+if [[ -f /var/run/reboot-required ]]; then
+  printf '\n%bREBOOT RECOMMENDED:%b Ubuntu updates require a reboot.\n' "$yellow" "$plain"
+fi
+printf '\n%bKeep the panel password and subscription URLs private.%b\n' "$yellow" "$plain"
+printf '%b================================================================%b\n' "$green" "$plain"

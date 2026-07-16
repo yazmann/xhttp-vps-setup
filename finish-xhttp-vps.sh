@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+green='\033[1;32m'; yellow='\033[1;33m'; red='\033[1;31m'; cyan='\033[1;36m'; blue='\033[1;34m'; plain='\033[0m'
+CURRENT_STEP='repair startup'
+die() {
+  printf '\n%b================================================================%b\n' "$red" "$plain" >&2
+  printf '%bREPAIR STOPPED%b\n' "$red" "$plain" >&2
+  printf '%bReason:%b %s\n%bCurrent step:%b %s\n' "$red" "$plain" "$*" "$yellow" "$plain" "$CURRENT_STEP" >&2
+  printf '%b================================================================%b\n' "$red" "$plain" >&2
+  exit 1
+}
+unexpected_error() {
+  local exit_code="$1" line="$2"
+  printf '\n%bUNEXPECTED REPAIR ERROR:%b step "%s", line %s, exit code %s.\n' "$red" "$plain" "$CURRENT_STEP" "$line" "$exit_code" >&2
+}
+trap 'unexpected_error "$?" "$LINENO"' ERR
 [[ ${EUID} -eq 0 ]] || die "Run as root."
 mapfile -t STATE_FILES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
 [[ ${#STATE_FILES[@]} -eq 1 ]] || die "Expected exactly one 3x-ui installer state file in /root; found ${#STATE_FILES[@]}."
@@ -41,7 +54,8 @@ for _ in $(seq 1 15); do
 done
 [[ "$READY" -eq 1 ]] || { systemctl status x-ui --no-pager || true; /usr/local/x-ui/x-ui setting -show true 2>/dev/null || true; die "Private bearer API failed after 15 attempts. Last response: ${R:-<empty>}"; }
 
-echo "Configuring subscription service..."
+CURRENT_STEP='configuring subscription service'
+printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
 R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/setting/all")"
 S="$(jq -c '.obj|if type=="string" then fromjson else . end' <<<"$R")"
 S="$(jq -c --arg d "$DOMAIN" --arg title "$VPN_NAME" --argjson p "$SUB_PORT" --arg path "/${SUB_PATH}/" \
@@ -62,7 +76,8 @@ R="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "$API_BASE/panel/api/setting/update" --data-binary "$S")"
 jq -e '.success==true' <<<"$R" >/dev/null || die "Subscription setup failed: $R"
 
-echo "Creating or repairing VLESS + XHTTP + REALITY inbound..."
+CURRENT_STEP='creating or repairing VLESS + XHTTP + REALITY inbound'
+printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
 R="$(curl -kfsS "${API_AUTH[@]}" "$API_BASE/panel/api/inbounds/list")"
 EXISTING_INBOUND="$(jq -c '.obj|if type=="string" then fromjson else . end|map(select(.port==443 and .protocol=="vless"))|first // empty' <<<"$R")"
 if [[ -n "$EXISTING_INBOUND" ]]; then
@@ -115,7 +130,8 @@ else
 fi
 
 if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
-  echo "Configuring built-in WARP and RU routing..."
+  CURRENT_STEP='configuring built-in WARP and RU routing'
+  printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
   R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/data")"
   if ! jq -e '.success==true and .obj!=null and .obj!=""' <<<"$R" >/dev/null; then
     PRIV="$(wg genkey)"; PUB="$(printf '%s' "$PRIV"|wg pubkey)"
@@ -178,10 +194,20 @@ for _ in $(seq 1 20); do
     -o /dev/null "https://${DOMAIN}:${PANEL_PORT}/${PANEL_PATH}/" 2>/dev/null; then PANEL_WEB_OK=1; break; fi
   sleep 1
 done
-echo
-echo "==================== COMPLETION AUDIT ===================="
+CURRENT_STEP='running completion audit'
+printf '\n%b==================== COMPLETION AUDIT ====================%b\n' "$blue" "$plain"
 FAILED=0
-report() { printf '%-32s %s\n' "$1" "$2"; [[ "$2" == ERROR ]] && FAILED=$((FAILED+1)) || true; }
+report() {
+  local label="$1" result="$2"
+  if [[ "$result" == OK ]]; then
+    printf '  %-32s %bOK%b\n' "$label" "$green" "$plain"
+  elif [[ "$result" == SKIP ]]; then
+    printf '  %-32s %bSKIP%b\n' "$label" "$yellow" "$plain"
+  else
+    printf '  %-32s %bERROR%b\n' "$label" "$red" "$plain"
+    FAILED=$((FAILED+1))
+  fi
+}
 if apt-get check >/dev/null 2>&1 && [[ -z "$(dpkg --audit)" ]]; then report "Package update/install" OK; else report "Package update/install" ERROR; fi
 if systemctl is-active --quiet x-ui; then report "3x-ui panel" OK; else report "3x-ui panel" ERROR; fi
 if systemctl is-active --quiet nginx && nginx -t >/dev/null 2>&1; then report "nginx self-steal" OK; else report "nginx self-steal" ERROR; fi
@@ -207,16 +233,29 @@ else
 fi
 if command -v fail2ban-client >/dev/null; then if systemctl is-active --quiet fail2ban; then report "Fail2ban" OK; else report "Fail2ban" ERROR; fi; else report "Fail2ban" SKIP; fi
 if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then report "WARP RU routing" OK; else report "WARP RU routing" SKIP; fi
-echo "=========================================================="
-[[ "$FAILED" -eq 0 ]] && echo "RESULT: ALL CHECKS PASSED" || echo "RESULT: ${FAILED} CHECK(S) FAILED"
-echo "PANEL URL: https://${DOMAIN}:${PANEL_PORT}/${PANEL_PATH}/"
-echo "LOGIN:     ${PANEL_USERNAME}"
-echo "PASSWORD:  ${PANEL_PASSWORD}"
-if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_SUB_ID:-}" ]]; then
-  echo "FIRST CLIENT: ${CLIENT_EMAIL}"
-  echo "HAPP / INCY SUBSCRIPTION: https://${DOMAIN}/${SUB_PATH}/${CLIENT_SUB_ID}"
-  echo "MIHOMO SUBSCRIPTION:      https://${DOMAIN}/${SUB_CLASH_PATH}/${CLIENT_SUB_ID}"
+printf '%b==========================================================%b\n' "$blue" "$plain"
+if [[ "$FAILED" -ne 0 ]]; then
+  printf '%bRESULT: %s CHECK(S) FAILED%b\n' "$red" "$FAILED" "$plain"
+  printf '%bFix every ERROR above before using the VPN or subscriptions.%b\n' "$yellow" "$plain"
+  printf '%bSaved state:%b %s\n' "$yellow" "$plain" "${STATE_FILES[0]}"
+  exit 1
 fi
-if [[ "$INSTALL_MODE" == "node" && -n "${PANEL_API_TOKEN:-}" ]]; then echo "API TOKEN: ${PANEL_API_TOKEN}"; fi
-echo "SAVED:     ${STATE_FILES[0]}"
-[[ "$FAILED" -eq 0 ]] || exit 1
+
+clear || true
+printf '%b================================================================%b\n' "$green" "$plain"
+printf '%b                    VPN REPAIR COMPLETED SUCCESSFULLY%b\n' "$green" "$plain"
+printf '%b                     ALL CHECKS PASSED%b\n' "$green" "$plain"
+printf '%b================================================================%b\n\n' "$green" "$plain"
+printf '%bPANEL%b\n' "$cyan" "$plain"
+printf '  %bURL:%b      https://%s:%s/%s/\n' "$yellow" "$plain" "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
+printf '  %bLogin:%b    %s\n' "$yellow" "$plain" "$PANEL_USERNAME"
+printf '  %bPassword:%b %s\n\n' "$yellow" "$plain" "$PANEL_PASSWORD"
+if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_SUB_ID:-}" ]]; then
+  printf '%bCLIENT SUBSCRIPTIONS%b\n' "$cyan" "$plain"
+  printf '  %bHAPP / INCY:%b https://%s/%s/%s\n' "$yellow" "$plain" "$DOMAIN" "$SUB_PATH" "$CLIENT_SUB_ID"
+  printf '  %bMihomo:%b      https://%s/%s/%s\n' "$yellow" "$plain" "$DOMAIN" "$SUB_CLASH_PATH" "$CLIENT_SUB_ID"
+  printf '  %bRouting:%b     HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$yellow" "$plain"
+fi
+if [[ "$INSTALL_MODE" == "node" && -n "${PANEL_API_TOKEN:-}" ]]; then printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "$PANEL_API_TOKEN"; fi
+printf '%bSaved state:%b %s\n' "$blue" "$plain" "${STATE_FILES[0]}"
+printf '%b================================================================%b\n' "$green" "$plain"
