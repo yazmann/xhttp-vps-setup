@@ -28,6 +28,7 @@ source "${STATE_FILES[0]}"
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
   : "${SUB_JSON_PATH:=json-$(od -An -N 10 -tx1 /dev/urandom|tr -d ' \n')}"
   : "${SUB_CLASH_PATH:=mihomo-$(od -An -N 10 -tx1 /dev/urandom|tr -d ' \n')}"
+  : "${MIHOMO_ROUTING_PATH:=mihomo-routing-$(od -An -N 10 -tx1 /dev/urandom|tr -d ' \n').yaml}"
 fi
 if [[ -r /etc/x-ui/install-result.env ]]; then
   # shellcheck disable=SC1091
@@ -75,6 +76,22 @@ fi
 R="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' \
   -X POST "$API_BASE/panel/api/setting/update" --data-binary "$S")"
 jq -e '.success==true' <<<"$R" >/dev/null || die "Subscription setup failed: $R"
+if [[ "$INSTALL_MODE" == "standalone" ]]; then
+  CURRENT_STEP='creating Mihomo subscription with RoscomVPN routing'
+  printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
+  MIHOMO_PROVIDER_URL="https://${DOMAIN}/${SUB_CLASH_PATH}/${CLIENT_SUB_ID}"
+  MIHOMO_ROUTING_URL="https://${DOMAIN}/${MIHOMO_ROUTING_PATH}"
+  MIHOMO_TEMPLATE="$(curl -fsSL --retry 3 --max-time 60 https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/main/MIHOMO/default.yaml 2>/dev/null || true)"
+  if grep -Fq '<ВВЕДИТЕ URL ПОДПИСКИ>' <<<"$MIHOMO_TEMPLATE"; then
+    printf '%s\n' "$MIHOMO_TEMPLATE" | sed "s|<ВВЕДИТЕ URL ПОДПИСКИ>|${MIHOMO_PROVIDER_URL}|g" > "/var/www/3xui-cover/${MIHOMO_ROUTING_PATH}"
+    chmod 644 "/var/www/3xui-cover/${MIHOMO_ROUTING_PATH}"
+    MIHOMO_CONFIGURED=1
+    printf 'MIHOMO_ROUTING_PATH=%s\n' "$MIHOMO_ROUTING_PATH" >> "${STATE_FILES[0]}"
+  else
+    MIHOMO_CONFIGURED=0
+    printf '%bWARNING:%b RoscomVPN Mihomo template could not be downloaded; the Mihomo routing subscription is unavailable.\n' "$yellow" "$plain" >&2
+  fi
+fi
 
 CURRENT_STEP='creating or repairing VLESS + XHTTP + REALITY inbound'
 printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
@@ -181,8 +198,8 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
     if grep -qi '^Routing-Enable:[[:space:]]*true' <<<"$SUB_HEADERS" && grep -qi '^Routing:[[:space:]]*happ://routing/onadd/' <<<"$SUB_HEADERS" && grep -q 'incy://routing/onadd/' <<<"$SUB_DECODED"; then ROUTING_OK=1; fi
   fi
   if [[ "$MIHOMO_CONFIGURED" -eq 1 ]]; then
-    MIHOMO_DATA="$(curl -kfsS --resolve "${DOMAIN}:443:127.0.0.1" --max-time 10 "https://${DOMAIN}/${SUB_CLASH_PATH}/${CLIENT_SUB_ID}" 2>/dev/null || true)"
-    if grep -q '^proxies:' <<<"$MIHOMO_DATA" && grep -q 'type: vless' <<<"$MIHOMO_DATA"; then MIHOMO_OK=1; fi
+    MIHOMO_DATA="$(curl -kfsS --resolve "${DOMAIN}:443:127.0.0.1" --max-time 10 "$MIHOMO_ROUTING_URL" 2>/dev/null || true)"
+    if grep -q '^rule-providers:' <<<"$MIHOMO_DATA" && grep -Fq "$MIHOMO_PROVIDER_URL" <<<"$MIHOMO_DATA"; then MIHOMO_OK=1; fi
   fi
 fi
 
@@ -253,7 +270,7 @@ printf '  %bPassword:%b %s\n\n' "$yellow" "$plain" "$PANEL_PASSWORD"
 if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_SUB_ID:-}" ]]; then
   printf '%bCLIENT SUBSCRIPTIONS%b\n' "$cyan" "$plain"
   printf '  %bHAPP / INCY:%b https://%s/%s/%s\n' "$yellow" "$plain" "$DOMAIN" "$SUB_PATH" "$CLIENT_SUB_ID"
-  printf '  %bMihomo:%b      https://%s/%s/%s\n' "$yellow" "$plain" "$DOMAIN" "$SUB_CLASH_PATH" "$CLIENT_SUB_ID"
+  printf '  %bMihomo:%b      %s\n' "$yellow" "$plain" "$MIHOMO_ROUTING_URL"
   printf '  %bRouting:%b     HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$yellow" "$plain"
 fi
 if [[ "$INSTALL_MODE" == "node" && -n "${PANEL_API_TOKEN:-}" ]]; then printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "$PANEL_API_TOKEN"; fi

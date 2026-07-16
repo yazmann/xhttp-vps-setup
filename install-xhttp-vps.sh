@@ -225,6 +225,7 @@ PANEL_PATH="panel-$(random_hex 10)"
 SUB_PATH="feed-$(random_hex 10)"
 SUB_JSON_PATH=""
 SUB_CLASH_PATH=""
+MIHOMO_ROUTING_PATH=""
 if [[ "$INSTALL_MODE" == "standalone" ]]; then PANEL_USERNAME="vpn$(random_hex 4)"; else PANEL_USERNAME="node$(random_hex 4)"; fi
 PANEL_PASSWORD="$(random_hex 18)"
 PANEL_API_TOKEN=""
@@ -237,6 +238,7 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   CLIENT_EMAIL="${INSTANCE_NAME}-primary"
   SUB_JSON_PATH="json-$(random_hex 10)"
   SUB_CLASH_PATH="mihomo-$(random_hex 10)"
+  MIHOMO_ROUTING_PATH="mihomo-routing-$(random_hex 10).yaml"
 fi
 SAFE_INSTANCE="$(printf '%s' "$INSTANCE_NAME" | tr -cs 'A-Za-z0-9_-' '_')"
 STATE_FILE="/root/3xui-vps-${SAFE_INSTANCE}.env"
@@ -267,6 +269,7 @@ SUB_PORT=${SUB_PORT}
 SUB_PATH=${SUB_PATH}
 SUB_JSON_PATH=${SUB_JSON_PATH}
 SUB_CLASH_PATH=${SUB_CLASH_PATH}
+MIHOMO_ROUTING_PATH=${MIHOMO_ROUTING_PATH}
 FALLBACK_PORT=${FALLBACK_PORT}
 PANEL_USERNAME=${PANEL_USERNAME}
 PANEL_PASSWORD=${PANEL_PASSWORD}
@@ -675,6 +678,22 @@ RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' -X P
 jq -e '.success == true' <<<"$RESPONSE" >/dev/null || die "Subscription configuration failed: ${RESPONSE}"
 SUBSCRIPTION_CONFIGURED=1
 
+if [[ "$INSTALL_MODE" == "standalone" ]]; then
+  log "Creating Mihomo subscription with RoscomVPN routing"
+  MIHOMO_PROVIDER_URL="https://${DOMAIN}/${SUB_CLASH_PATH}/${CLIENT_SUB_ID}"
+  MIHOMO_ROUTING_URL="https://${DOMAIN}/${MIHOMO_ROUTING_PATH}"
+  MIHOMO_TEMPLATE="$(curl -fsSL --retry 3 --max-time 60 https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/main/MIHOMO/default.yaml 2>/dev/null || true)"
+  if grep -Fq '<ВВЕДИТЕ URL ПОДПИСКИ>' <<<"$MIHOMO_TEMPLATE"; then
+    printf '%s\n' "$MIHOMO_TEMPLATE" | sed "s|<ВВЕДИТЕ URL ПОДПИСКИ>|${MIHOMO_PROVIDER_URL}|g" > "/var/www/3xui-cover/${MIHOMO_ROUTING_PATH}"
+    chmod 644 "/var/www/3xui-cover/${MIHOMO_ROUTING_PATH}"
+    MIHOMO_CONFIGURED=1
+    write_state
+  else
+    MIHOMO_CONFIGURED=0
+    warn "RoscomVPN Mihomo template could not be downloaded; the Mihomo routing subscription is unavailable."
+  fi
+fi
+
 log "Creating VLESS + XHTTP + REALITY inbound on TCP/443"
 RESPONSE="$(curl -kfsS "${API_AUTH[@]}" "$API_BASE/panel/api/server/getNewX25519Cert")"
 jq -e '.success == true' <<<"$RESPONSE" >/dev/null || die "Reality key generation failed: ${RESPONSE}"
@@ -797,8 +816,8 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   fi
   if [[ "$MIHOMO_CONFIGURED" -eq 1 ]]; then
     MIHOMO_RESPONSE="$(curl -kfsS --resolve "${DOMAIN}:443:127.0.0.1" --max-time 10 \
-      "https://${DOMAIN}/${SUB_CLASH_PATH}/${CLIENT_SUB_ID}" 2>/dev/null || true)"
-    if grep -q '^proxies:' <<<"$MIHOMO_RESPONSE" && grep -q 'type: vless' <<<"$MIHOMO_RESPONSE"; then MIHOMO_VERIFIED=1; fi
+      "$MIHOMO_ROUTING_URL" 2>/dev/null || true)"
+    if grep -q '^rule-providers:' <<<"$MIHOMO_RESPONSE" && grep -Fq "$MIHOMO_PROVIDER_URL" <<<"$MIHOMO_RESPONSE"; then MIHOMO_VERIFIED=1; fi
   fi
 fi
 
@@ -886,7 +905,7 @@ fi
 
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
   SUBSCRIPTION_URL="https://${DOMAIN}/${SUB_PATH}/${CLIENT_SUB_ID}"
-  MIHOMO_SUBSCRIPTION_URL="https://${DOMAIN}/${SUB_CLASH_PATH}/${CLIENT_SUB_ID}"
+  MIHOMO_SUBSCRIPTION_URL="$MIHOMO_ROUTING_URL"
   printf -v MODE_DETAILS 'FIRST CLIENT: %s\nHAPP / INCY SUBSCRIPTION: %s\nMIHOMO SUBSCRIPTION:      %s\n\n%s' \
     "$CLIENT_EMAIL" "$SUBSCRIPTION_URL" "$MIHOMO_SUBSCRIPTION_URL" "$STANDALONE_STATUS_MESSAGE"
 else
