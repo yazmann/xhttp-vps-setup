@@ -91,9 +91,9 @@ remove_installation() {
     rm -rf /root/.acme.sh /root/cert
   fi
 
-  ufw --force delete allow 80/tcp >/dev/null 2>&1 || true
-  ufw --force delete allow 443/tcp >/dev/null 2>&1 || true
-  ufw --force delete allow "${PANEL_PORT}/tcp" >/dev/null 2>&1 || true
+  [[ "${UFW_HTTP_RULE_EXISTED:-1}" == 1 ]] || ufw --force delete allow 80/tcp >/dev/null 2>&1 || true
+  [[ "${UFW_HTTPS_RULE_EXISTED:-1}" == 1 ]] || ufw --force delete allow 443/tcp >/dev/null 2>&1 || true
+  [[ "${UFW_PANEL_RULE_EXISTED:-1}" == 1 ]] || ufw --force delete allow "${PANEL_PORT}/tcp" >/dev/null 2>&1 || true
   if [[ "${UFW_SSH_RULE_EXISTED:-${UFW_OPENSSH_EXISTED:-1}}" == 0 ]]; then
     ufw --force delete allow "${SSH_PORT:-22}/tcp" >/dev/null 2>&1 || true
   fi
@@ -187,6 +187,11 @@ fi
 read -rp "Domain already pointed to this VPS (example: vpn.example.com): " DOMAIN
 DOMAIN="${DOMAIN,,}"
 [[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] || die "Invalid domain: ${DOMAIN}"
+[[ ${#DOMAIN} -le 253 ]] || die "Domain is longer than the DNS limit (253 characters)."
+IFS='.' read -r -a DOMAIN_LABELS <<<"$DOMAIN"
+for DOMAIN_LABEL in "${DOMAIN_LABELS[@]}"; do
+  [[ ${#DOMAIN_LABEL} -le 63 ]] || die "A DNS label in the domain is longer than 63 characters."
+done
 
 DEFAULT_INSTANCE="$(hostname -s | tr -cd 'A-Za-z0-9_-')"
 INSTANCE_NAME="${DEFAULT_INSTANCE:-$([[ "$INSTALL_MODE" == "standalone" ]] && echo VPN1 || echo NODE1)}"
@@ -303,6 +308,14 @@ UFW_SSH_RULE_EXISTED=0
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])(${SSH_PORT}/tcp|OpenSSH)([[:space:]]|$)"; then
   UFW_SSH_RULE_EXISTED=1
 fi
+UFW_HTTP_RULE_EXISTED=0
+UFW_HTTPS_RULE_EXISTED=0
+UFW_PANEL_RULE_EXISTED=0
+if command -v ufw >/dev/null; then
+  ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])80/tcp([[:space:]]|$)" && UFW_HTTP_RULE_EXISTED=1
+  ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])443/tcp([[:space:]]|$)" && UFW_HTTPS_RULE_EXISTED=1
+  ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])${PANEL_PORT}/tcp([[:space:]]|$)" && UFW_PANEL_RULE_EXISTED=1
+fi
 
 install_recovery_script() {
   local temporary_file
@@ -354,6 +367,9 @@ PREV_IPV6_LO=${PREV_IPV6_LO}
 UFW_WAS_ACTIVE=${UFW_WAS_ACTIVE}
 SSH_PORT=${SSH_PORT}
 UFW_SSH_RULE_EXISTED=${UFW_SSH_RULE_EXISTED}
+UFW_HTTP_RULE_EXISTED=${UFW_HTTP_RULE_EXISTED}
+UFW_HTTPS_RULE_EXISTED=${UFW_HTTPS_RULE_EXISTED}
+UFW_PANEL_RULE_EXISTED=${UFW_PANEL_RULE_EXISTED}
 PACKAGES_INSTALLED_BY_SCRIPT="${PACKAGES_INSTALLED_BY_SCRIPT# }"
 EOF
   chmod 600 "$STATE_FILE"
@@ -496,7 +512,7 @@ for p in "$PANEL_PORT" "$SUB_PORT" 443 "$FALLBACK_PORT"; do port_busy "$p" && di
 XUI_VERSION="$(curl -fsS --max-time 10 https://api.github.com/repos/MHSanaei/3x-ui/releases/latest | jq -r '.tag_name // empty' || true)"
 [[ -n "$XUI_VERSION" ]] || die "Could not determine the current 3x-ui release from GitHub. Check VPS Internet access and try again."
 INSTALLER=/tmp/3x-ui-install.sh
-curl -fL --retry 3 https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh -o "$INSTALLER"
+curl -fL --retry 3 "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_VERSION}/install.sh" -o "$INSTALLER"
 chmod 700 "$INSTALLER"
 if [[ "$TLS_MODE" == "production" ]]; then
   XUI_NONINTERACTIVE=1 XUI_SERVER_IP="$PUBLIC_IP" XUI_USERNAME="$PANEL_USERNAME" \
