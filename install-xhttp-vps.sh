@@ -207,13 +207,18 @@ fi
 VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 [[ ${#VPN_NAME} -ge 1 && ${#VPN_NAME} -le 64 ]] || die "${NAME_LABEL} must contain 1-64 characters."
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
-if [[ "$INSTALL_MODE" == "standalone" ]]; then
-  read -rp "Route *.ru and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
-  [[ "${WARP_ANSWER:-y}" =~ ^[Nn]$ ]] && ENABLE_WARP=0 || ENABLE_WARP=1
-else
-  read -rp "Route *.ru and geoip:ru through Cloudflare WARP on this node? [y/N]: " WARP_ANSWER
-  [[ "${WARP_ANSWER:-n}" =~ ^[Yy]$ ]] && ENABLE_WARP=1 || ENABLE_WARP=0
-fi
+cat <<'EOF'
+Cloudflare WARP routing:
+  1) Do not configure WARP (default)
+  2) Route .ru domains and geoip:ru through WARP
+EOF
+read -rp "Select WARP mode [1]: " WARP_CHOICE
+WARP_CHOICE="${WARP_CHOICE:-1}"
+case "$WARP_CHOICE" in
+  1) ENABLE_WARP=0 ;;
+  2) ENABLE_WARP=1 ;;
+  *) die "Unknown WARP mode: $WARP_CHOICE" ;;
+esac
 
 cat <<'EOF'
 Cover-site design:
@@ -860,9 +865,9 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
         .outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
         | .routing=(.routing//{}) | .routing.domainStrategy="IPIfNonMatch"
         | .routing.rules=[
-            {"type":"field","domain":["regexp:.*\\.ru$"],"outboundTag":"warp","network":"tcp,udp"},
-            {"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp"}
-          ]+((.routing.rules//[])|map(select(.outboundTag!="warp")))
+            {"type":"field","domain":["domain:ru"],"outboundTag":"warp","network":"tcp,udp","ruleTag":"xhttp-vps-warp-ru-domain"},
+            {"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp","ruleTag":"xhttp-vps-warp-ru-ip"}
+          ]+((.routing.rules//[])|map(select(.ruleTag!="xhttp-vps-warp-ru-domain" and .ruleTag!="xhttp-vps-warp-ru-ip")))
       ' <<<"$XRAY")"
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
