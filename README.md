@@ -1,4 +1,4 @@
-# XHTTP VPN setup
+# XHTTP VPS setup
 
 Автоматическая настройка чистого Ubuntu VPS для VPN.
 
@@ -27,7 +27,7 @@
 ## Установка
 
 ```bash
-wget -O /root/install-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vpn-setup/main/install-xhttp-vps.sh
+wget -O /root/install-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh
 chmod 700 /root/install-xhttp-vps.sh
 /root/install-xhttp-vps.sh
 ```
@@ -50,7 +50,7 @@ chmod 700 /root/install-xhttp-vps.sh
 Если основной установщик дошёл до установки 3x-ui, но прервался во время настройки, загрузите и запустите:
 
 ```bash
-wget -O /root/finish-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vpn-setup/main/finish-xhttp-vps.sh
+wget -O /root/finish-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh
 chmod 700 /root/finish-xhttp-vps.sh
 /root/finish-xhttp-vps.sh
 ```
