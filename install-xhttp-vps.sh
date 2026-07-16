@@ -207,17 +207,11 @@ fi
 VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 [[ ${#VPN_NAME} -ge 1 && ${#VPN_NAME} -le 64 ]] || die "${NAME_LABEL} must contain 1-64 characters."
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
-cat <<'EOF'
-Cloudflare WARP routing:
-  1) Do not configure WARP
-  2) Route .ru domains and geoip:ru through WARP (default)
-EOF
-read -rp "Select WARP mode [2]: " WARP_CHOICE
-WARP_CHOICE="${WARP_CHOICE:-2}"
-case "$WARP_CHOICE" in
-  1) ENABLE_WARP=0 ;;
-  2) ENABLE_WARP=1 ;;
-  *) die "Unknown WARP mode: $WARP_CHOICE" ;;
+read -rp "Route .ru domains and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
+case "${WARP_ANSWER:-y}" in
+  y|Y|yes|YES|Yes) ENABLE_WARP=1 ;;
+  n|N|no|NO|No) ENABLE_WARP=0 ;;
+  *) die "Expected yes or no for Cloudflare WARP routing." ;;
 esac
 
 cat <<'EOF'
