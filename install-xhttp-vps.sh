@@ -33,7 +33,7 @@ trap 'unexpected_error "$?" "$LINENO"' ERR
 [[ ${EUID} -eq 0 ]] || die "Run as root."
 
 remove_installation() {
-  local script_path
+  local keep_script="${1:-0}" script_path
   script_path="$(readlink -f "$0")"
   mapfile -t states < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
   [[ ${#states[@]} -eq 1 ]] || die "Expected one 3x-ui installer state file in /root; found ${#states[@]}."
@@ -41,6 +41,7 @@ remove_installation() {
   source "${states[0]}"
   printf '%bThis removes the 3x-ui installation for %s and its generated data.%b\n' "$yellow" "$DOMAIN" "$plain"
   read -rp "Type DELETE to continue: " answer
+  answer="${answer//$'\r'/}"
   [[ "$answer" == DELETE ]] || die "Removal cancelled."
   warn "Removal restores the configuration created by this script and removes packages it installed. Ubuntu security updates are intentionally kept."
 
@@ -86,16 +87,33 @@ remove_installation() {
     apt-get autoremove -y || true
   fi
   printf '%bRemoval complete.%b The VPN installation, generated data and recorded configuration changes were removed. Ubuntu package updates were kept for security.\n' "$green" "$plain"
-  rm -f "$script_path"
+  [[ "$keep_script" == 1 ]] || rm -f "$script_path"
 }
 
-printf '\nInstallation mode:\n1) Standalone VPN server\n2) Node for an existing 3x-ui panel\n3) Remove every change made by this script\n0) Exit\n'
+prepare_vps() {
+  local script_path
+  script_path="$(readlink -f "$0")"
+  mapfile -t states < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
+  if [[ ${#states[@]} -eq 1 ]]; then
+    printf '%bPREPARATION:%b a previous installation created by this script was found. It can be removed safely.\n' "$yellow" "$plain"
+    remove_installation 1
+    printf '%bVPS preparation complete.%b Restarting the installer.\n' "$green" "$plain"
+    exec "$script_path"
+  elif [[ ${#states[@]} -eq 0 ]]; then
+    die "No installation managed by this script was found. For safety, automatic preparation will not delete unknown Nginx, 3x-ui or firewall settings. Use a fresh VPS or remove those services manually."
+  else
+    die "Found ${#states[@]} managed installation state files. Remove or archive the extra state files before preparation."
+  fi
+}
+
+printf '\nInstallation mode:\n1) Standalone VPN server\n2) Node for an existing 3x-ui panel\n3) Remove every change made by this script\n4) Prepare VPS for a fresh installation\n0) Exit\n'
 read -rp "Select [1]: " ACTION
 ACTION="${ACTION:-1}"
 case "$ACTION" in
   1) INSTALL_MODE="standalone" ;;
   2) INSTALL_MODE="node" ;;
   3) remove_installation; exit 0 ;;
+  4) prepare_vps ;;
   0) exit 0 ;;
   *) die "Unknown menu item: $ACTION" ;;
 esac
