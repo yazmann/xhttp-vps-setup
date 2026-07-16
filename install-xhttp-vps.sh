@@ -209,11 +209,11 @@ VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
 cat <<'EOF'
 Cloudflare WARP routing:
-  1) Do not configure WARP (default)
-  2) Route .ru domains and geoip:ru through WARP
+  1) Do not configure WARP
+  2) Route .ru domains and geoip:ru through WARP (default)
 EOF
-read -rp "Select WARP mode [1]: " WARP_CHOICE
-WARP_CHOICE="${WARP_CHOICE:-1}"
+read -rp "Select WARP mode [2]: " WARP_CHOICE
+WARP_CHOICE="${WARP_CHOICE:-2}"
 case "$WARP_CHOICE" in
   1) ENABLE_WARP=0 ;;
   2) ENABLE_WARP=1 ;;
