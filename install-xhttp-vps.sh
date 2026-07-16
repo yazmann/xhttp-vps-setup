@@ -100,6 +100,11 @@ remove_installation() {
   [[ "${UFW_WAS_ACTIVE:-1}" == 1 ]] || ufw --force disable >/dev/null 2>&1 || true
 
   rm -f /etc/modules-load.d/bbr.conf /etc/sysctl.d/99-xhttp-vps-network.conf /etc/sysctl.d/99-3xui-node-network.conf
+  if [[ "${SWAP_CREATED_BY_SCRIPT:-0}" == 1 ]]; then
+    swapoff /swapfile >/dev/null 2>&1 || true
+    sed -i '\|^/swapfile[[:space:]]\+none[[:space:]]\+swap[[:space:]]\+sw[[:space:]]\+0[[:space:]]\+0[[:space:]]*$|d' /etc/fstab
+    rm -f /swapfile
+  fi
   rm -f /etc/apt/apt.conf.d/52xhttp-vps-auto-upgrades /etc/apt/apt.conf.d/53xhttp-vps-unattended-upgrades
   sysctl -w "net.core.default_qdisc=${PREV_QDISC:-fq_codel}" >/dev/null 2>&1 || true
   sysctl -w "net.ipv4.tcp_congestion_control=${PREV_CC:-cubic}" >/dev/null 2>&1 || true
@@ -208,9 +213,11 @@ VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 [[ ${#VPN_NAME} -ge 1 && ${#VPN_NAME} -le 64 ]] || die "${NAME_LABEL} must contain 1-64 characters."
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
 read -rp "Route .ru domains and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
+WARP_ANSWER="${WARP_ANSWER//$'\r'/}"
+WARP_ANSWER="${WARP_ANSWER,,}"
 case "${WARP_ANSWER:-y}" in
-  y|Y|yes|YES|Yes) ENABLE_WARP=1 ;;
-  n|N|no|NO|No) ENABLE_WARP=0 ;;
+  y|yes) ENABLE_WARP=1 ;;
+  n|no) ENABLE_WARP=0 ;;
   *) die "Expected yes or no for Cloudflare WARP routing." ;;
 esac
 
@@ -310,6 +317,7 @@ fi
 UFW_HTTP_RULE_EXISTED=0
 UFW_HTTPS_RULE_EXISTED=0
 UFW_PANEL_RULE_EXISTED=0
+SWAP_CREATED_BY_SCRIPT=0
 if command -v ufw >/dev/null; then
   ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])80/tcp([[:space:]]|$)" && UFW_HTTP_RULE_EXISTED=1
   ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])443/tcp([[:space:]]|$)" && UFW_HTTPS_RULE_EXISTED=1
@@ -328,6 +336,50 @@ install_recovery_script() {
     rm -f "$temporary_file"
     warn "Could not download the recovery script. If installation stops after this point, download finish-xhttp-vps.sh from the project and run it after fixing the reported cause."
   fi
+}
+
+configure_warp_swap() {
+  local memory_kib free_kib
+  memory_kib="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+  if ! [[ "$memory_kib" =~ ^[0-9]+$ ]] || (( memory_kib > 1100000 )); then
+    return 0
+  fi
+  if swapon --noheadings --show 2>/dev/null | grep -q .; then
+    log "Keeping existing swap for low-memory WARP VPS"
+    return 0
+  fi
+  if [[ -e /swapfile ]]; then
+    warn "Low-memory WARP VPS has /swapfile, but it is not active. The installer will not modify an existing file."
+    return 0
+  fi
+  free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
+  if ! [[ "$free_kib" =~ ^[0-9]+$ ]] || (( free_kib < 1310720 )); then
+    warn "Low-memory WARP VPS has insufficient free disk space for the required 1 GiB swap."
+    return 0
+  fi
+  log "Adding 1 GiB swap for low-memory WARP VPS"
+  if ! fallocate -l 1G /swapfile; then
+    warn "Could not allocate /swapfile; continuing without managed swap."
+    return 0
+  fi
+  chmod 600 /swapfile
+  if ! mkswap /swapfile >/dev/null; then
+    rm -f /swapfile
+    warn "Could not format /swapfile; continuing without managed swap."
+    return 0
+  fi
+  if ! swapon /swapfile; then
+    rm -f /swapfile
+    warn "Could not enable /swapfile; continuing without managed swap."
+    return 0
+  fi
+  if ! printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab; then
+    swapoff /swapfile >/dev/null 2>&1 || true
+    rm -f /swapfile
+    warn "Could not persist /swapfile in /etc/fstab; continuing without managed swap."
+    return 0
+  fi
+  SWAP_CREATED_BY_SCRIPT=1
 }
 
 write_state() {
@@ -370,6 +422,7 @@ UFW_HTTP_RULE_EXISTED=${UFW_HTTP_RULE_EXISTED}
 UFW_HTTPS_RULE_EXISTED=${UFW_HTTPS_RULE_EXISTED}
 UFW_PANEL_RULE_EXISTED=${UFW_PANEL_RULE_EXISTED}
 PACKAGES_INSTALLED_BY_SCRIPT="${PACKAGES_INSTALLED_BY_SCRIPT# }"
+SWAP_CREATED_BY_SCRIPT=${SWAP_CREATED_BY_SCRIPT:-0}
 EOF
   chmod 600 "$STATE_FILE"
   INSTALLATION_STARTED=1
@@ -866,6 +919,7 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
         WARP_CONFIGURED=1
+        configure_warp_swap
       else
         warn "WARP routing could not be saved and was skipped. The VPN installation will continue without WARP. Panel response: ${RESPONSE}"
         ENABLE_WARP=0
@@ -873,6 +927,7 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
     fi
   fi
 fi
+write_state
 
 systemctl restart x-ui
 sleep 1
@@ -1011,6 +1066,16 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
   if [[ "${WARP_CONFIGURED:-0}" -eq 1 ]]; then status_line "WARP RU routing" OK; else status_line "WARP RU routing" ERROR; fi
 else
   status_line "WARP RU routing" SKIP "disabled by user"
+fi
+MEMORY_KIB_FINAL="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+if [[ "$ENABLE_WARP" -eq 1 && "$MEMORY_KIB_FINAL" =~ ^[0-9]+$ ]] && (( MEMORY_KIB_FINAL <= 1100000 )); then
+  if swapon --noheadings --show 2>/dev/null | grep -q .; then
+    status_line "Swap for low-memory WARP" OK
+  else
+    status_line "Swap for low-memory WARP" ERROR "1 GiB swap is required"
+  fi
+else
+  status_line "Swap for low-memory WARP" SKIP "not required"
 fi
 printf '============================================================\n'
 
