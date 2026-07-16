@@ -75,5 +75,4 @@ chmod 700 /root/finish-xhttp-vps.sh
 
 ## Документация
 
-- [Проверка на чистом VPS](TEST.md)
 - [Сторонние компоненты](THIRD_PARTY_NOTICES.md)
