@@ -28,6 +28,7 @@ source "${STATE_FILES[0]}"
 : "${TLS_MODE:=production}"
 : "${INSTANCE_NAME:=${NODE_NAME:-VPN}}"
 : "${VPN_NAME:=$INSTANCE_NAME}"
+STATE_PANEL_API_TOKEN="${PANEL_API_TOKEN:-}"
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
   : "${SUB_JSON_PATH:=json-$(od -An -N 10 -tx1 /dev/urandom|tr -d ' \n')}"
   : "${SUB_CLASH_PATH:=mihomo-$(od -An -N 10 -tx1 /dev/urandom|tr -d ' \n')}"
@@ -40,14 +41,9 @@ if [[ -r /etc/x-ui/install-result.env ]]; then
   PANEL_PASSWORD="${XUI_PASSWORD:-$PANEL_PASSWORD}"
   PANEL_PORT="${XUI_PANEL_PORT:-$PANEL_PORT}"
   PANEL_PATH="${XUI_WEB_BASE_PATH:-$PANEL_PATH}"
-  PANEL_API_TOKEN="${XUI_API_TOKEN:-${PANEL_API_TOKEN:-}}"
+  PANEL_API_TOKEN="${STATE_PANEL_API_TOKEN:-${XUI_API_TOKEN:-${PANEL_API_TOKEN:-}}}"
   PANEL_PATH="${PANEL_PATH#/}"; PANEL_PATH="${PANEL_PATH%/}"
 fi
-# Prefer the token reported by the running panel: install-result.env can hold
-# an earlier token after a reinstall or a panel-side rotation.
-CURRENT_API_TOKEN="$(/usr/local/x-ui/x-ui setting -getApiToken true 2>/dev/null \
-  | awk -F': ' '/apiToken:/{gsub(/[[:space:]]/, "", $2); print $2; exit}')"
-[[ -n "$CURRENT_API_TOKEN" ]] && PANEL_API_TOKEN="$CURRENT_API_TOKEN"
 for cmd in curl jq wg; do command -v "$cmd" >/dev/null || die "Missing command: $cmd"; done
 [[ -n "${PANEL_API_TOKEN:-}" ]] || die "State/install-result does not contain the 3x-ui API token."
 
@@ -80,6 +76,21 @@ for _ in $(seq 1 15); do
   if jq -e '.success==true' <<<"$R" >/dev/null 2>&1; then READY=1; break; fi
   sleep 1
 done
+if [[ "$READY" -eq 0 && "$R" == *'error: 401'* ]]; then
+  printf '%bAPI token required:%b the saved token was rejected by the panel. In the panel open Settings → API Tokens, create a token named xhttp-recovery, then paste it below.\n' "$yellow" "$plain" >&2
+  read -r -s -p "New API token (input is hidden): " PANEL_API_TOKEN
+  printf '\n' >&2
+  if [[ -n "$PANEL_API_TOKEN" ]]; then
+    API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
+    printf '\nPANEL_API_TOKEN=%q\n' "$PANEL_API_TOKEN" >> "${STATE_FILES[0]}"
+    READY=0
+    for _ in $(seq 1 15); do
+      R="$(curl -kfsS "${API_AUTH[@]}" --connect-timeout 2 --max-time 5 "$API_BASE/panel/api/server/status" 2>&1 || true)"
+      if jq -e '.success==true' <<<"$R" >/dev/null 2>&1; then READY=1; break; fi
+      sleep 1
+    done
+  fi
+fi
 [[ "$READY" -eq 1 ]] || { systemctl status x-ui --no-pager || true; /usr/local/x-ui/x-ui setting -show true 2>/dev/null || true; die "Private bearer API failed after 15 attempts. Last response: ${R:-<empty>}"; }
 
 CURRENT_STEP='configuring subscription service'

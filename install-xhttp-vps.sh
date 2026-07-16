@@ -532,11 +532,13 @@ if [[ -r /etc/x-ui/install-result.env ]]; then
   PANEL_PATH="${PANEL_PATH#/}"; PANEL_PATH="${PANEL_PATH%/}"
   write_state
 fi
-# The running panel is authoritative: a reinstall or panel-side token rotation
-# can make the token in install-result.env stale.
-CURRENT_API_TOKEN="$(/usr/local/x-ui/x-ui setting -getApiToken true 2>/dev/null \
-  | awk -F': ' '/apiToken:/{gsub(/[[:space:]]/, "", $2); print $2; exit}')"
-[[ -n "$CURRENT_API_TOKEN" ]] && PANEL_API_TOKEN="$CURRENT_API_TOKEN"
+# Current 3x-ui writes the one-time plaintext token to install-result.env.
+# Use the CLI only when the installer omitted a token: on recent 3x-ui releases
+# that command mints a new fallback token and must never be called routinely.
+if [[ -z "$PANEL_API_TOKEN" ]]; then
+  PANEL_API_TOKEN="$(/usr/local/x-ui/x-ui setting -getApiToken true 2>/dev/null \
+    | awk -F': ' '/apiToken:/{gsub(/[[:space:]]/, "", $2); print $2; exit}')"
+fi
 # Keep the panel private while it is being configured. Public IPv4 listening
 # is enabled only after every API mutation and verification has completed.
 /usr/local/x-ui/x-ui setting -listenIP 127.0.0.1 -resetTwoFactor=true >/dev/null
