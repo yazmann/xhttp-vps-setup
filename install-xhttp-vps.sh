@@ -40,10 +40,11 @@ remove_installation() {
   # shellcheck disable=SC1090
   source "${states[0]}"
   printf '%bThis removes the 3x-ui installation for %s and its generated data.%b\n' "$yellow" "$DOMAIN" "$plain"
-  read -rp "Continue? [yes/NO]: " answer
-  # Some SSH terminals send a carriage return or trailing whitespace with
-  # interactive input. Remove only whitespace, then accept an explicit yes.
-  answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
+  read -r -p "Continue? [yes/NO]: " answer
+  # Strip a possible carriage return from an SSH terminal and normalise case.
+  # Bash is required by this installer, and Ubuntu ships Bash 4+.
+  answer="${answer//$'\r'/}"
+  answer="${answer,,}"
   [[ "$answer" == "yes" || "$answer" == "y" ]] || die "Removal cancelled."
   warn "Removal restores the configuration created by this script and removes packages it installed. Ubuntu security updates are intentionally kept."
 
