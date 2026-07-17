@@ -514,6 +514,7 @@ for package in "${INSTALL_PACKAGES[@]}"; do
   dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' \
     || PACKAGES_INSTALLED_BY_SCRIPT+=" ${package}"
 done
+write_state
 apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${INSTALL_PACKAGES[@]}"
 write_state
 
@@ -629,8 +630,6 @@ fi
 # is enabled only after every API mutation and verification has completed.
 /usr/local/x-ui/x-ui setting -listenIP 127.0.0.1 -resetTwoFactor=true >/dev/null
 [[ -n "$PANEL_API_TOKEN" ]] || die "The official 3x-ui installer did not provide an API token in /etc/x-ui/install-result.env."
-INSTALL_PHASE=service-ready
-write_state
 
 log "Creating the TLS self-steal site"
 install -d -m 755 /var/www/3xui-cover
@@ -779,6 +778,9 @@ if [[ "$TLS_MODE" == "production" ]]; then
   /root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --key-file "$CERT_DIR/privkey.pem" \
     --fullchain-file "$CERT_DIR/fullchain.pem" --reloadcmd "systemctl reload nginx && systemctl restart x-ui"
 fi
+
+INSTALL_PHASE=service-ready
+write_state
 
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
