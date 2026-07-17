@@ -47,7 +47,6 @@ fi
 for cmd in curl jq wg; do command -v "$cmd" >/dev/null || die "Missing command: $cmd"; done
 [[ -n "${PANEL_API_TOKEN:-}" ]] || die "State/install-result does not contain the 3x-ui API token."
 
-/usr/local/x-ui/x-ui setting -listenIP 127.0.0.1 -resetTwoFactor=true >/dev/null
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
 
@@ -110,7 +109,6 @@ configure_warp_swap() {
     printf '%bWARNING:%b Could not persist /swapfile in /etc/fstab; continuing without managed swap.\n' "$yellow" "$plain" >&2
     return 0
   fi
-  SWAP_CREATED_BY_SCRIPT=1
   printf '\nSWAP_CREATED_BY_SCRIPT=1\n' >> "${STATE_FILES[0]}"
 }
 
@@ -141,11 +139,12 @@ fi
 CURRENT_STEP='configuring subscription service'
 printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
 R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/setting/all")"
+jq -e '.success==true and .obj!=null' <<<"$R" >/dev/null || die "Could not read panel settings: $R"
 S="$(jq -c '.obj|if type=="string" then fromjson else . end' <<<"$R")"
+jq -e 'type=="object"' <<<"$S" >/dev/null || die "Panel settings have an unexpected format."
 S="$(jq -c --arg d "$DOMAIN" --arg title "$VPN_NAME" --argjson p "$SUB_PORT" --arg path "/${SUB_PATH}/" \
   --arg cert "/root/cert/${DOMAIN}/fullchain.pem" --arg key "/root/cert/${DOMAIN}/privkey.pem" '
-  .twoFactorEnable=false
-  |.subEnable=true|.subEncrypt=true|.subListen="127.0.0.1"|.subDomain=$d|.subPort=$p|.subPath=$path
+  .subEnable=true|.subEncrypt=true|.subListen="127.0.0.1"|.subDomain=$d|.subPort=$p|.subPath=$path
   |.subCertFile=$cert|.subKeyFile=$key|.subURI=("https://"+$d+$path)|.subTitle=$title' <<<"$S")"
 ROUTING_CONFIGURED=0; MIHOMO_CONFIGURED=0
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
@@ -179,7 +178,13 @@ fi
 CURRENT_STEP='creating or repairing VLESS + XHTTP + REALITY inbound'
 printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
 R="$(curl -kfsS "${API_AUTH[@]}" "$API_BASE/panel/api/inbounds/list")"
-EXISTING_INBOUND="$(jq -c '.obj|if type=="string" then fromjson else . end|map(select(.port==443 and .protocol=="vless"))|first // empty' <<<"$R")"
+jq -e '.success==true and .obj!=null' <<<"$R" >/dev/null || die "Could not read inbounds: $R"
+INBOUNDS="$(jq -c '.obj|if type=="string" then fromjson else . end' <<<"$R")"
+jq -e 'type=="array"' <<<"$INBOUNDS" >/dev/null || die "Inbound list has an unexpected format."
+EXISTING_INBOUND="$(jq -c 'map(select(.tag=="in-443-xhttp-reality"))|first // empty' <<<"$INBOUNDS")"
+if [[ -z "$EXISTING_INBOUND" ]] && jq -e 'any(.port==443)' <<<"$INBOUNDS" >/dev/null; then
+  die "TCP/443 is occupied by an unmanaged inbound; recovery will not overwrite it."
+fi
 if [[ -n "$EXISTING_INBOUND" ]]; then
   INBOUND_ID="$(jq -r '.id' <<<"$EXISTING_INBOUND")"
   IS="$(jq -c '.settings|if type=="string" then fromjson else . end' <<<"$EXISTING_INBOUND")"
@@ -251,7 +256,9 @@ if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
       die "WARP account data is incomplete. WARP was requested, so repair cannot continue."
     else
       R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
+      jq -e '.success==true and .obj!=null' <<<"$R" >/dev/null || die "Could not read Xray configuration: $R"
       X="$(jq -c '.obj|if type=="string" then fromjson else . end|.xraySetting|if type=="string" then fromjson else . end' <<<"$R")"
+      jq -e 'type=="object" and (.outbounds|type=="array")' <<<"$X" >/dev/null || die "Xray configuration has an unexpected format."
       cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
       X="$(jq -c --argjson w "$WARP_OUT" '.outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
         |.routing=(.routing//{})|.routing.domainStrategy="IPIfNonMatch"
