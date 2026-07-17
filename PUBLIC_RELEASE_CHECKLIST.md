@@ -6,7 +6,7 @@
 
 **Описание**
 
-> Установщик Ubuntu VPS: 3x-ui, VLESS/XHTTP/REALITY Self-steal, WARP для .ru и готовые подписки.
+> Установщик 3x-ui: VLESS/XHTTP/REALITY Self-steal с сайтом-заглушкой.
 
 **Topics**
 
