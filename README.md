@@ -1,15 +1,15 @@
 # XHTTP VPS setup
 
-Установщик чистого Ubuntu VPS для VPN на базе [3x-ui](https://github.com/MHSanaei/3x-ui): VLESS + XHTTP + REALITY и готовые подписки.
+Установщик чистого Ubuntu VPS для VPN на базе [3x-ui](https://github.com/MHSanaei/3x-ui): VLESS + XHTTP + **REALITY Self-steal** и готовые подписки.
 
 ## Главное
 
-- Один вход VLESS/XHTTP/REALITY на TCP/443.
-- **Self-steal:** при обычном открытии домена на 443 отображается собственный сайт-заглушка. Для VPN используется тот же порт; чужие домены и SNI не нужны.
-- Автоматически настраиваются TLS-сертификат Let's Encrypt, firewall UFW, BBR, отключение IPv6 и ежедневные обновления безопасности.
-- Подписки для HAPP, INCY и Mihomo уже содержат правила [RoscomVPN Routing](https://github.com/hydraponique/roscomvpn-routing).
-- WARP для трафика к доменам `.ru` включён по умолчанию; при установке его можно выключить ответом `no`. На VPS с 1 ГБ RAM вместе с WARP добавляется swap 1 ГБ.
-- Можно установить самостоятельный сервер или удалённую ноду для существующей панели.
+- [VLESS + XHTTP/REALITY](https://github.com/XTLS/Xray-core) Self-steal на TCP/443.
+- [NGINX](https://github.com/nginx/nginx) с сайтом-заглушкой на том же домене — для схемы Self-steal.
+- TLS-сертификат [Let's Encrypt](https://letsencrypt.org/), firewall [UFW](https://launchpad.net/ufw), [BBR](https://www.kernel.org/doc/html/latest/networking/bbr.html), отключение IPv6 и ежедневные обновления безопасности.
+- Подписки для [HAPP](https://github.com/Happ-proxy/happ-desktop), [INCY](https://incy.cc/) и [Mihomo](https://github.com/MetaCubeX/mihomo) с правилами маршрутизации [RoscomVPN](https://github.com/hydraponique/roscomvpn-routing).
+- [Cloudflare WARP](https://www.cloudflare.com/warp/) для трафика с VPS к российским доменам и IP-адресам; включён по умолчанию, отключается ответом `no`.
+- Самостоятельный VPN-сервер или удалённая нода для существующей панели.
 
 ## Требования
 
@@ -22,23 +22,40 @@
 
 ## Установка
 
-Репозиторий приватный: через GitHub Desktop загрузите на VPS в `/root` оба файла — `install-xhttp-vps.sh` и `finish-xhttp-vps.sh`.
+Войдите на VPS как `root` и выполните:
 
 ```bash
-chmod 700 /root/install-xhttp-vps.sh /root/finish-xhttp-vps.sh
+cd /root
+curl -fLO https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh
+curl -fLO https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh
+chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh
+./install-xhttp-vps.sh
+```
+
+Скрипт задаст необходимые вопросы. После успешной установки он покажет готовый блок с панелью и подписками либо с параметрами ноды. Те же данные сохраняются в защищённом файле `/root/xhttp-vps-result-*.txt`.
+
+## Управление
+
+Чтобы снова открыть меню установщика:
+
+```bash
 /root/install-xhttp-vps.sh
 ```
 
-После установки результат сохранится в файле `/root/xhttp-vps-result-*.txt`.
+- Пункт `5` — показать текущие настройки; появляется после завершённой установки.
+- Если установка прервалась: `/root/finish-xhttp-vps.sh`.
 
-## Если нужно продолжить или удалить установку
+## Полное удаление
 
-- Продолжить прерванную настройку: `/root/finish-xhttp-vps.sh`
-- Удалить установку: пункт `3` меню.
-- Подготовить VPS к новой установке: пункт `4` меню.
+1. Запустите `/root/install-xhttp-vps.sh`.
+2. Выберите пункт `3` и подтвердите удаление ответом `yes` или `y`.
+
+Удаляются только компоненты и настройки, созданные этим скриптом: 3x-ui, управляемая конфигурация Nginx и сайта-заглушки, сертификаты, firewall-правила, swap (если его создал скрипт), результаты установки и записанные пакеты. Обновления безопасности Ubuntu сохраняются.
+
+Пункт `4` удаляет управляемую установку и сразу запускает настройку заново.
 
 ## Используемые проекты
 
-[3x-ui](https://github.com/MHSanaei/3x-ui) · [Xray-core](https://github.com/XTLS/Xray-core) · [NGINX](https://github.com/nginx/nginx) · [Cloudflare WARP](https://www.cloudflare.com/warp/) · [RoscomVPN Routing](https://github.com/hydraponique/roscomvpn-routing)
+[3x-ui](https://github.com/MHSanaei/3x-ui) · [Xray-core](https://github.com/XTLS/Xray-core) · [NGINX](https://github.com/nginx/nginx) · [Let's Encrypt](https://letsencrypt.org/) · [UFW](https://launchpad.net/ufw) · [BBR](https://www.kernel.org/doc/html/latest/networking/bbr.html) · [Cloudflare WARP](https://www.cloudflare.com/warp/) · [HAPP](https://github.com/Happ-proxy/happ-desktop) · [INCY](https://incy.cc/) · [Mihomo](https://github.com/MetaCubeX/mihomo) · [RoscomVPN Routing](https://github.com/hydraponique/roscomvpn-routing)
 
 Сторонние компоненты и лицензии: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
