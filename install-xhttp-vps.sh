@@ -100,8 +100,13 @@ remove_installation() {
   [[ "${UFW_WAS_ACTIVE:-1}" == 1 ]] || ufw --force disable >/dev/null 2>&1 || true
 
   rm -f /etc/modules-load.d/bbr.conf /etc/sysctl.d/99-xhttp-vps-network.conf /etc/sysctl.d/99-3xui-node-network.conf
-  if [[ "${SWAP_CREATED_BY_SCRIPT:-0}" == 1 ]]; then
-    swapoff /swapfile >/dev/null 2>&1 || true
+  if [[ "${SWAP_CREATED_BY_SCRIPT:-0}" == 1 ]];
+    if ! swapoff /swapfile; then
+      die "Could not disable the swap created by this script. Keep /swapfile and its /etc/fstab entry, free memory, then retry removal."
+    fi
+    if swapon --noheadings --show=NAME 2>/dev/null | grep -Fxq /swapfile; then
+      die "The swap created by this script is still active after swapoff. Removal stopped to protect the running system."
+    fi
     sed -i '\|^/swapfile[[:space:]]\+none[[:space:]]\+swap[[:space:]]\+sw[[:space:]]\+0[[:space:]]\+0[[:space:]]*$|d' /etc/fstab
     rm -f /swapfile
   fi
@@ -325,8 +330,17 @@ if command -v ufw >/dev/null; then
 fi
 
 install_recovery_script() {
-  local temporary_file
+  local temporary_file source_file
   temporary_file="${RECOVERY_SCRIPT}.new"
+  source_file="$(dirname "$(readlink -f "$0")")/finish-xhttp-vps.sh"
+  if [[ -r "$source_file" ]]; then
+    install -m 700 "$source_file" "$temporary_file"
+    mv -f "$temporary_file" "$RECOVERY_SCRIPT"
+  else
+    rm -f "$temporary_file"
+    warn "Recovery script was not installed: upload finish-xhttp-vps.sh alongside this installer before starting. The repository is private, so anonymous GitHub downloads are unavailable."
+  fi
+}
   if curl -fL --retry 3 --connect-timeout 10 --max-time 60 \
     https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh \
     -o "$temporary_file"; then
@@ -383,8 +397,10 @@ configure_warp_swap() {
 }
 
 write_state() {
+  local temporary_file
+  temporary_file="${STATE_FILE}.new"
   umask 077
-  cat > "$STATE_FILE" <<EOF
+  cat > "$temporary_file" <<EOF
 INSTANCE_NAME=${INSTANCE_NAME}
 VPN_NAME=$(printf '%q' "$VPN_NAME")
 INSTALL_MODE=${INSTALL_MODE}
@@ -424,7 +440,8 @@ UFW_PANEL_RULE_EXISTED=${UFW_PANEL_RULE_EXISTED}
 PACKAGES_INSTALLED_BY_SCRIPT="${PACKAGES_INSTALLED_BY_SCRIPT# }"
 SWAP_CREATED_BY_SCRIPT=${SWAP_CREATED_BY_SCRIPT:-0}
 EOF
-  chmod 600 "$STATE_FILE"
+  chmod 600 "$temporary_file"
+  mv -f "$temporary_file" "$STATE_FILE"
   INSTALLATION_STARTED=1
   if [[ ! -x "$RECOVERY_SCRIPT" ]]; then
     install_recovery_script
@@ -904,7 +921,9 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       die "WARP account data is incomplete. WARP was requested, so installation cannot continue."
     else
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
+      jq -e '.success == true and .obj != null' <<<"$RESPONSE" >/dev/null || die "Could not read Xray configuration: $RESPONSE"
       XRAY="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$RESPONSE")"
+      jq -e 'type=="object" and (.outbounds|type=="array")' <<<"$XRAY" >/dev/null || die "Xray configuration has an unexpected format."
       cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
       XRAY="$(jq -c --argjson w "$WARP_OUT" '
         .outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
@@ -916,6 +935,9 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       ' <<<"$XRAY")"
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
+        VERIFY_WARP_RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
+        VERIFY_WARP="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$VERIFY_WARP_RESPONSE")"
+        jq -e 'type=="object" and any(.outbounds[]?; .tag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-domain" and .outboundTag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-ip" and .outboundTag=="warp")' <<<"$VERIFY_WARP" >/dev/null || die "WARP configuration could not be verified after saving."
         WARP_CONFIGURED=1
         configure_warp_swap
       else
