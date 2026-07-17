@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 yazmann
 set -Eeuo pipefail
 
 # Universal unattended 3x-ui VPN server / remote-node installer for a fresh Ubuntu VPS.
