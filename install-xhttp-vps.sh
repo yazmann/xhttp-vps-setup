@@ -101,7 +101,12 @@ remove_installation() {
 
   rm -f /etc/modules-load.d/bbr.conf /etc/sysctl.d/99-xhttp-vps-network.conf /etc/sysctl.d/99-3xui-node-network.conf
   if [[ "${SWAP_CREATED_BY_SCRIPT:-0}" == 1 ]]; then
-    swapoff /swapfile >/dev/null 2>&1 || true
+    if ! swapoff /swapfile; then
+      die "Could not disable the swap created by this script. Keep /swapfile and its /etc/fstab entry, free memory, then retry removal."
+    fi
+    if swapon --noheadings --show=NAME 2>/dev/null | grep -Fxq /swapfile; then
+      die "The swap created by this script is still active after swapoff. Removal stopped to protect the running system."
+    fi
     sed -i '\|^/swapfile[[:space:]]\+none[[:space:]]\+swap[[:space:]]\+sw[[:space:]]\+0[[:space:]]\+0[[:space:]]*$|d' /etc/fstab
     rm -f /swapfile
   fi
@@ -176,6 +181,15 @@ case "$(uname -m)" in
 esac
 mapfile -t EXISTING_STATES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
 if ((${#EXISTING_STATES[@]} > 0)); then
+  if ((${#EXISTING_STATES[@]} == 1)); then
+    # shellcheck disable=SC1090
+    source "${EXISTING_STATES[0]}"
+    if [[ "${INSTALL_PHASE:-}" == "bootstrap" ]]; then
+      warn "An earlier installation stopped before 3x-ui was ready. Removing only its recorded partial changes, then restarting safely."
+      remove_installation 1 1
+      exec "$(readlink -f "$0")"
+    fi
+  fi
   die "This VPS already has an installation managed by this script. Select menu item 3 to remove it, or run /root/finish-xhttp-vps.sh to repair an interrupted installation."
 fi
 [[ ! -e /etc/x-ui/x-ui.db && ! -x /usr/local/x-ui/x-ui ]] \
@@ -325,16 +339,15 @@ if command -v ufw >/dev/null; then
 fi
 
 install_recovery_script() {
-  local temporary_file
+  local temporary_file source_file
   temporary_file="${RECOVERY_SCRIPT}.new"
-  if curl -fL --retry 3 --connect-timeout 10 --max-time 60 \
-    https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh \
-    -o "$temporary_file"; then
-    chmod 700 "$temporary_file"
+  source_file="$(dirname "$(readlink -f "$0")")/finish-xhttp-vps.sh"
+  if [[ -r "$source_file" ]]; then
+    install -m 700 "$source_file" "$temporary_file"
     mv -f "$temporary_file" "$RECOVERY_SCRIPT"
   else
     rm -f "$temporary_file"
-    warn "Could not download the recovery script. If installation stops after this point, download finish-xhttp-vps.sh from the project and run it after fixing the reported cause."
+    warn "Recovery script was not installed: upload finish-xhttp-vps.sh alongside this installer before starting. The repository is private, so anonymous GitHub downloads are unavailable."
   fi
 }
 
@@ -383,12 +396,15 @@ configure_warp_swap() {
 }
 
 write_state() {
+  local temporary_file
+  temporary_file="${STATE_FILE}.new"
   umask 077
-  cat > "$STATE_FILE" <<EOF
+  cat > "$temporary_file" <<EOF
 INSTANCE_NAME=${INSTANCE_NAME}
 VPN_NAME=$(printf '%q' "$VPN_NAME")
 INSTALL_MODE=${INSTALL_MODE}
 TLS_MODE=${TLS_MODE}
+INSTALL_PHASE=${INSTALL_PHASE:-bootstrap}
 DOMAIN=${DOMAIN}
 PUBLIC_IP=${PUBLIC_IP}
 PANEL_PORT=${PANEL_PORT}
@@ -424,7 +440,8 @@ UFW_PANEL_RULE_EXISTED=${UFW_PANEL_RULE_EXISTED}
 PACKAGES_INSTALLED_BY_SCRIPT="${PACKAGES_INSTALLED_BY_SCRIPT# }"
 SWAP_CREATED_BY_SCRIPT=${SWAP_CREATED_BY_SCRIPT:-0}
 EOF
-  chmod 600 "$STATE_FILE"
+  chmod 600 "$temporary_file"
+  mv -f "$temporary_file" "$STATE_FILE"
   INSTALLATION_STARTED=1
   if [[ ! -x "$RECOVERY_SCRIPT" ]]; then
     install_recovery_script
@@ -449,6 +466,7 @@ Configuration summary
 EOF
 read -rp "Start installation? [y/N]: " CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Cancelled."
+INSTALL_PHASE=bootstrap
 write_state
 
 log "Refreshing Ubuntu repositories and upgrading installed packages"
@@ -496,6 +514,7 @@ for package in "${INSTALL_PACKAGES[@]}"; do
   dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' \
     || PACKAGES_INSTALLED_BY_SCRIPT+=" ${package}"
 done
+write_state
 apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends "${INSTALL_PACKAGES[@]}"
 write_state
 
@@ -611,7 +630,6 @@ fi
 # is enabled only after every API mutation and verification has completed.
 /usr/local/x-ui/x-ui setting -listenIP 127.0.0.1 -resetTwoFactor=true >/dev/null
 [[ -n "$PANEL_API_TOKEN" ]] || die "The official 3x-ui installer did not provide an API token in /etc/x-ui/install-result.env."
-write_state
 
 log "Creating the TLS self-steal site"
 install -d -m 755 /var/www/3xui-cover
@@ -761,6 +779,9 @@ if [[ "$TLS_MODE" == "production" ]]; then
     --fullchain-file "$CERT_DIR/fullchain.pem" --reloadcmd "systemctl reload nginx && systemctl restart x-ui"
 fi
 
+INSTALL_PHASE=service-ready
+write_state
+
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
 
@@ -904,7 +925,9 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       die "WARP account data is incomplete. WARP was requested, so installation cannot continue."
     else
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
+      jq -e '.success == true and .obj != null' <<<"$RESPONSE" >/dev/null || die "Could not read Xray configuration: $RESPONSE"
       XRAY="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$RESPONSE")"
+      jq -e 'type=="object" and (.outbounds|type=="array")' <<<"$XRAY" >/dev/null || die "Xray configuration has an unexpected format."
       cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
       XRAY="$(jq -c --argjson w "$WARP_OUT" '
         .outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
@@ -916,6 +939,9 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       ' <<<"$XRAY")"
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
+        VERIFY_WARP_RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
+        VERIFY_WARP="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$VERIFY_WARP_RESPONSE")"
+        jq -e 'type=="object" and any(.outbounds[]?; .tag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-domain" and .outboundTag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-ip" and .outboundTag=="warp")' <<<"$VERIFY_WARP" >/dev/null || die "WARP configuration could not be verified after saving."
         WARP_CONFIGURED=1
         configure_warp_swap
       else
