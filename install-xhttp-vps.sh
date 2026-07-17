@@ -144,7 +144,38 @@ prepare_vps() {
   fi
 }
 
-printf '\nInstallation mode:\n1) Standalone VPN server\n2) Node for an existing 3x-ui panel\n3) Remove every change made by this script\n4) Prepare VPS for a fresh installation\n0) Exit\n'
+show_current_settings() {
+  local state_file
+  mapfile -t states < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
+  [[ ${#states[@]} -eq 1 ]] || die "No completed installation managed by this script was found."
+  state_file="${states[0]}"
+  # shellcheck disable=SC1090
+  source "$state_file"
+  [[ -n "${RESULT_FILE:-}" && -r "$RESULT_FILE" ]] \
+    || die "The saved result file is not available. Re-run the installer only if you need to create a new installation."
+  clear || true
+  printf '%b================================================================%b\n' "$green" "$plain"
+  printf '%b                    CURRENT SERVER SETTINGS%b\n' "$green" "$plain"
+  printf '%b================================================================%b\n\n' "$green" "$plain"
+  cat -- "$RESULT_FILE"
+  printf '\n%b================================================================%b\n' "$green" "$plain"
+  printf '%bThe settings are stored in:%b %s\n' "$cyan" "$plain" "$RESULT_FILE"
+  printf '%b================================================================%b\n' "$green" "$plain"
+  exit 0
+}
+
+HAS_CURRENT_SETTINGS=0
+mapfile -t MENU_STATE_FILES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
+mapfile -t MENU_RESULT_FILES < <(find /root -maxdepth 1 -type f -name 'xhttp-vps-result-*.txt' -print)
+if [[ ${#MENU_STATE_FILES[@]} -eq 1 && ${#MENU_RESULT_FILES[@]} -eq 1 ]]; then
+  HAS_CURRENT_SETTINGS=1
+fi
+
+printf '\nInstallation mode:\n1) Standalone VPN server\n2) Node for an existing 3x-ui panel\n3) Remove every change made by this script\n4) Prepare VPS for a fresh installation\n'
+if [[ "$HAS_CURRENT_SETTINGS" -eq 1 ]]; then
+  printf '5) Show current server settings\n'
+fi
+printf '0) Exit\n'
 read -rp "Select [1]: " ACTION
 ACTION="${ACTION:-1}"
 case "$ACTION" in
@@ -152,6 +183,7 @@ case "$ACTION" in
   2) INSTALL_MODE="node" ;;
   3) remove_installation; exit 0 ;;
   4) prepare_vps ;;
+  5) [[ "$HAS_CURRENT_SETTINGS" -eq 1 ]] || die "Current server settings are available only after a completed installation."; show_current_settings ;;
   0) exit 0 ;;
   *) die "Unknown menu item: $ACTION" ;;
 esac
@@ -1127,6 +1159,30 @@ umask 077
   printf 'PANEL URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
   printf 'LOGIN: %s\nPASSWORD: %s\n' "$PANEL_USERNAME" "$PANEL_PASSWORD"
   printf '%s\n' "$MODE_DETAILS"
+  if [[ "$INSTALL_MODE" == "standalone" ]]; then
+    printf '\nMAIN SERVER — COPY OR SAVE\n'
+    printf '%s\n' '---------------------------------------------------------------'
+    printf 'Panel URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
+    printf 'Panel login: %s\n' "$PANEL_USERNAME"
+    printf 'Panel password: %s\n' "$PANEL_PASSWORD"
+    printf 'HAPP / INCY subscription: %s\n' "$SUBSCRIPTION_URL"
+    printf 'Mihomo subscription: %s\n' "$MIHOMO_SUBSCRIPTION_URL"
+    printf '%s\n' '---------------------------------------------------------------'
+  else
+    printf '\nNODE CONNECTION — COPY TO THE MAIN 3X-UI PANEL\n'
+    printf '%s\n' '---------------------------------------------------------------'
+    printf 'Name: %s\n' "$VPN_NAME"
+    printf 'Remark: \n'
+    printf 'Scheme: https\n'
+    printf 'Address: %s\n' "$DOMAIN"
+    printf 'Port: %s\n' "$PANEL_PORT"
+    printf 'Base Path: /%s/\n' "$PANEL_PATH"
+    printf 'Enabled: yes\n'
+    printf 'Allow private address: no\n'
+    printf 'TLS verification: Verify (default CA)\n'
+    printf 'API Token: %s\n' "$PANEL_API_TOKEN"
+    printf '%s\n' '---------------------------------------------------------------'
+  fi
 } > "$RESULT_FILE"
 chmod 600 "$RESULT_FILE"
 umask 022
@@ -1156,12 +1212,30 @@ printf '  %bURL:%b      https://%s:%s/%s/\n' "$yellow" "$plain" "$DOMAIN" "$PANE
 printf '  %bLogin:%b    %s\n' "$yellow" "$plain" "$PANEL_USERNAME"
 printf '  %bPassword:%b %s\n\n' "$yellow" "$plain" "$PANEL_PASSWORD"
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
-  printf '%bCLIENT SUBSCRIPTIONS%b\n' "$cyan" "$plain"
-  printf '  %bHAPP / INCY:%b %s\n' "$yellow" "$plain" "$SUBSCRIPTION_URL"
-  printf '  %bMihomo:%b      %s\n' "$yellow" "$plain" "$MIHOMO_SUBSCRIPTION_URL"
-  printf '  %bRouting:%b     HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$yellow" "$plain"
+  printf '%bMAIN SERVER — COPY OR SAVE%b\n' "$cyan" "$plain"
+  printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
+  printf 'Panel URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
+  printf 'Panel login: %s\n' "$PANEL_USERNAME"
+  printf 'Panel password: %s\n' "$PANEL_PASSWORD"
+  printf 'HAPP / INCY subscription: %s\n' "$SUBSCRIPTION_URL"
+  printf 'Mihomo subscription: %s\n' "$MIHOMO_SUBSCRIPTION_URL"
+  printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
+  printf '%bRouting:%b HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$cyan" "$plain"
 else
-  printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "${PANEL_API_TOKEN:-not provided by this 3x-ui version}"
+  printf '%bNODE CONNECTION — COPY TO THE MAIN 3X-UI PANEL%b\n' "$cyan" "$plain"
+  printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
+  printf 'Name: %s\n' "$VPN_NAME"
+  printf 'Remark: \n'
+  printf 'Scheme: https\n'
+  printf 'Address: %s\n' "$DOMAIN"
+  printf 'Port: %s\n' "$PANEL_PORT"
+  printf 'Base Path: /%s/\n' "$PANEL_PATH"
+  printf 'Enabled: yes\n'
+  printf 'Allow private address: no\n'
+  printf 'TLS verification: Verify (default CA)\n'
+  printf 'API Token: %s\n' "$PANEL_API_TOKEN"
+  printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
+  printf '%bIn the main panel:%b Nodes → Add node. Fill in the fields above; leave Remark empty.\n\n' "$cyan" "$plain"
 fi
 printf '%bVPN inbound:%b VLESS + XHTTP + REALITY on TCP/443\n' "$blue" "$plain"
 printf '%bWARP routing:%b %s\n' "$blue" "$plain" "$([[ "$ENABLE_WARP" -eq 1 ]] && echo ENABLED || echo DISABLED)"
