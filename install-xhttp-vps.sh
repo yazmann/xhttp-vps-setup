@@ -181,6 +181,15 @@ case "$(uname -m)" in
 esac
 mapfile -t EXISTING_STATES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
 if ((${#EXISTING_STATES[@]} > 0)); then
+  if ((${#EXISTING_STATES[@]} == 1)); then
+    # shellcheck disable=SC1090
+    source "${EXISTING_STATES[0]}"
+    if [[ "${INSTALL_PHASE:-}" == "bootstrap" ]]; then
+      warn "An earlier installation stopped before 3x-ui was ready. Removing only its recorded partial changes, then restarting safely."
+      remove_installation 1 1
+      exec "$(readlink -f "$0")"
+    fi
+  fi
   die "This VPS already has an installation managed by this script. Select menu item 3 to remove it, or run /root/finish-xhttp-vps.sh to repair an interrupted installation."
 fi
 [[ ! -e /etc/x-ui/x-ui.db && ! -x /usr/local/x-ui/x-ui ]] \
@@ -395,6 +404,7 @@ INSTANCE_NAME=${INSTANCE_NAME}
 VPN_NAME=$(printf '%q' "$VPN_NAME")
 INSTALL_MODE=${INSTALL_MODE}
 TLS_MODE=${TLS_MODE}
+INSTALL_PHASE=${INSTALL_PHASE:-bootstrap}
 DOMAIN=${DOMAIN}
 PUBLIC_IP=${PUBLIC_IP}
 PANEL_PORT=${PANEL_PORT}
@@ -456,6 +466,7 @@ Configuration summary
 EOF
 read -rp "Start installation? [y/N]: " CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Cancelled."
+INSTALL_PHASE=bootstrap
 write_state
 
 log "Refreshing Ubuntu repositories and upgrading installed packages"
@@ -618,6 +629,7 @@ fi
 # is enabled only after every API mutation and verification has completed.
 /usr/local/x-ui/x-ui setting -listenIP 127.0.0.1 -resetTwoFactor=true >/dev/null
 [[ -n "$PANEL_API_TOKEN" ]] || die "The official 3x-ui installer did not provide an API token in /etc/x-ui/install-result.env."
+INSTALL_PHASE=service-ready
 write_state
 
 log "Creating the TLS self-steal site"
