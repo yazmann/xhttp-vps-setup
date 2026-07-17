@@ -6,7 +6,7 @@
 
 - Один вход VLESS/XHTTP/REALITY на TCP/443.
 - **Self-steal:** на 443 работает собственный нейтральный сайт-заглушка через Nginx; схема не использует чужие популярные SNI.
-- Production TLS от Let's Encrypt, UFW, BBR + fq, отключение IPv6 и ежедневные обновления безопасности.
+- TLS-сертификат Let's Encrypt, UFW, BBR + fq, отключение IPv6 и ежедневные обновления безопасности.
 - Готовые подписки для HAPP, INCY и Mihomo с правилами [RoscomVPN Routing](https://github.com/hydraponique/roscomvpn-routing).
 - Опциональный [Cloudflare WARP](https://www.cloudflare.com/warp/) для доменов `.ru` и `geoip:ru`; включён по умолчанию. На VPS с ~1 ГБ RAM при WARP автоматически добавляется swap 1 ГБ.
 - Режимы standalone-сервера и удалённой ноды для существующей панели.
@@ -15,7 +15,7 @@
 
 - Чистый Ubuntu 22.04+ и доступ `root` по SSH.
 - Домен с A-записью на IPv4 VPS, без AAAA-записи.
-- Подходит любой DNS-провайдер. Если используется Cloudflare — включите **DNS only**.
+- Подходит любой DNS-провайдер.
 - Во внешнем firewall должны быть доступны SSH, TCP/80, TCP/443 и показанный установщиком порт панели.
 
 > Не запускайте на VPS с существующими 3x-ui, Nginx или активным UFW.
