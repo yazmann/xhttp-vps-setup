@@ -1127,6 +1127,21 @@ umask 077
   printf 'PANEL URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
   printf 'LOGIN: %s\nPASSWORD: %s\n' "$PANEL_USERNAME" "$PANEL_PASSWORD"
   printf '%s\n' "$MODE_DETAILS"
+  if [[ "$INSTALL_MODE" == "node" ]]; then
+    printf '\nNODE CONNECTION — COPY TO THE MAIN 3X-UI PANEL\n'
+    printf '%s\n' '---------------------------------------------------------------'
+    printf 'Name: %s\n' "$VPN_NAME"
+    printf 'Remark: \n'
+    printf 'Scheme: https\n'
+    printf 'Address: %s\n' "$DOMAIN"
+    printf 'Port: %s\n' "$PANEL_PORT"
+    printf 'Base Path: /%s/\n' "$PANEL_PATH"
+    printf 'Enabled: yes\n'
+    printf 'Allow private address: no\n'
+    printf 'TLS verification: Verify (default CA)\n'
+    printf 'API Token: %s\n' "$PANEL_API_TOKEN"
+    printf '%s\n' '---------------------------------------------------------------'
+  fi
 } > "$RESULT_FILE"
 chmod 600 "$RESULT_FILE"
 umask 022
@@ -1161,7 +1176,20 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   printf '  %bMihomo:%b      %s\n' "$yellow" "$plain" "$MIHOMO_SUBSCRIPTION_URL"
   printf '  %bRouting:%b     HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$yellow" "$plain"
 else
-  printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "${PANEL_API_TOKEN:-not provided by this 3x-ui version}"
+  printf '%bNODE CONNECTION — COPY TO THE MAIN 3X-UI PANEL%b\n' "$cyan" "$plain"
+  printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
+  printf 'Name: %s\n' "$VPN_NAME"
+  printf 'Remark: \n'
+  printf 'Scheme: https\n'
+  printf 'Address: %s\n' "$DOMAIN"
+  printf 'Port: %s\n' "$PANEL_PORT"
+  printf 'Base Path: /%s/\n' "$PANEL_PATH"
+  printf 'Enabled: yes\n'
+  printf 'Allow private address: no\n'
+  printf 'TLS verification: Verify (default CA)\n'
+  printf 'API Token: %s\n' "$PANEL_API_TOKEN"
+  printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
+  printf '%bIn the main panel:%b Nodes → Add node. Fill in the fields above; leave Remark empty.\n\n' "$cyan" "$plain"
 fi
 printf '%bVPN inbound:%b VLESS + XHTTP + REALITY on TCP/443\n' "$blue" "$plain"
 printf '%bWARP routing:%b %s\n' "$blue" "$plain" "$([[ "$ENABLE_WARP" -eq 1 ]] && echo ENABLED || echo DISABLED)"
