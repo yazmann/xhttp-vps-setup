@@ -100,7 +100,7 @@ remove_installation() {
   [[ "${UFW_WAS_ACTIVE:-1}" == 1 ]] || ufw --force disable >/dev/null 2>&1 || true
 
   rm -f /etc/modules-load.d/bbr.conf /etc/sysctl.d/99-xhttp-vps-network.conf /etc/sysctl.d/99-3xui-node-network.conf
-  if [[ "${SWAP_CREATED_BY_SCRIPT:-0}" == 1 ]];
+  if [[ "${SWAP_CREATED_BY_SCRIPT:-0}" == 1 ]]; then
     if ! swapoff /swapfile; then
       die "Could not disable the swap created by this script. Keep /swapfile and its /etc/fstab entry, free memory, then retry removal."
     fi
@@ -339,16 +339,6 @@ install_recovery_script() {
   else
     rm -f "$temporary_file"
     warn "Recovery script was not installed: upload finish-xhttp-vps.sh alongside this installer before starting. The repository is private, so anonymous GitHub downloads are unavailable."
-  fi
-}
-  if curl -fL --retry 3 --connect-timeout 10 --max-time 60 \
-    https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh \
-    -o "$temporary_file"; then
-    chmod 700 "$temporary_file"
-    mv -f "$temporary_file" "$RECOVERY_SCRIPT"
-  else
-    rm -f "$temporary_file"
-    warn "Could not download the recovery script. If installation stops after this point, download finish-xhttp-vps.sh from the project and run it after fixing the reported cause."
   fi
 }
 
