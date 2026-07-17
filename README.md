@@ -4,12 +4,12 @@
 
 ## Главное
 
-- Один вход [VLESS/XHTTP/REALITY](https://github.com/XTLS/Xray-core) на TCP/443.
-- **REALITY Self-steal:** при обычном открытии домена на 443 [NGINX](https://github.com/nginx/nginx) показывает собственный сайт-заглушку. Для VPN используется тот же порт; чужие домены и SNI не нужны.
-- Автоматически настраиваются TLS-сертификат [Let's Encrypt](https://letsencrypt.org/), firewall [UFW](https://launchpad.net/ufw), [BBR](https://www.kernel.org/doc/html/latest/networking/bbr.html), отключение IPv6 и ежедневные обновления безопасности.
-- Подписки для [HAPP](https://github.com/Happ-proxy/happ-desktop), [INCY](https://incy.cc/) и [Mihomo](https://github.com/MetaCubeX/mihomo) уже содержат правила [RoscomVPN Routing](https://github.com/hydraponique/roscomvpn-routing).
-- [Cloudflare WARP](https://www.cloudflare.com/warp/) для трафика к доменам `.ru` включён по умолчанию; при установке его можно выключить ответом `no`. На VPS с 1 ГБ RAM вместе с WARP добавляется swap 1 ГБ.
-- Можно установить самостоятельный сервер или удалённую ноду для существующей панели.
+- [VLESS + XHTTP/REALITY](https://github.com/XTLS/Xray-core) Self-steal на TCP/443.
+- [NGINX](https://github.com/nginx/nginx) с сайтом-заглушкой на том же домене — для схемы Self-steal.
+- TLS-сертификат [Let's Encrypt](https://letsencrypt.org/), firewall [UFW](https://launchpad.net/ufw), [BBR](https://www.kernel.org/doc/html/latest/networking/bbr.html), отключение IPv6 и ежедневные обновления безопасности.
+- Подписки для [HAPP](https://github.com/Happ-proxy/happ-desktop), [INCY](https://incy.cc/) и [Mihomo](https://github.com/MetaCubeX/mihomo) с правилами маршрутизации [RoscomVPN](https://github.com/hydraponique/roscomvpn-routing).
+- [Cloudflare WARP](https://www.cloudflare.com/warp/) для трафика с VPS к российским доменам и IP-адресам; включён по умолчанию, отключается ответом `no`.
+- Самостоятельный VPN-сервер или удалённая нода для существующей панели.
 
 ## Требования
 
