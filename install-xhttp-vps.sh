@@ -1127,7 +1127,16 @@ umask 077
   printf 'PANEL URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
   printf 'LOGIN: %s\nPASSWORD: %s\n' "$PANEL_USERNAME" "$PANEL_PASSWORD"
   printf '%s\n' "$MODE_DETAILS"
-  if [[ "$INSTALL_MODE" == "node" ]]; then
+  if [[ "$INSTALL_MODE" == "standalone" ]]; then
+    printf '\nMAIN SERVER — COPY OR SAVE\n'
+    printf '%s\n' '---------------------------------------------------------------'
+    printf 'Panel URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
+    printf 'Panel login: %s\n' "$PANEL_USERNAME"
+    printf 'Panel password: %s\n'
+    printf 'HAPP / INCY subscription: %s\n' "$SUBSCRIPTION_URL"
+    printf 'Mihomo subscription: %s\n' "$MIHOMO_SUBSCRIPTION_URL"
+    printf '%s\n' '---------------------------------------------------------------'
+  else
     printf '\nNODE CONNECTION — COPY TO THE MAIN 3X-UI PANEL\n'
     printf '%s\n' '---------------------------------------------------------------'
     printf 'Name: %s\n' "$VPN_NAME"
@@ -1171,10 +1180,15 @@ printf '  %bURL:%b      https://%s:%s/%s/\n' "$yellow" "$plain" "$DOMAIN" "$PANE
 printf '  %bLogin:%b    %s\n' "$yellow" "$plain" "$PANEL_USERNAME"
 printf '  %bPassword:%b %s\n\n' "$yellow" "$plain" "$PANEL_PASSWORD"
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
-  printf '%bCLIENT SUBSCRIPTIONS%b\n' "$cyan" "$plain"
-  printf '  %bHAPP / INCY:%b %s\n' "$yellow" "$plain" "$SUBSCRIPTION_URL"
-  printf '  %bMihomo:%b      %s\n' "$yellow" "$plain" "$MIHOMO_SUBSCRIPTION_URL"
-  printf '  %bRouting:%b     HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$yellow" "$plain"
+  printf '%bMAIN SERVER — COPY OR SAVE%b\n' "$cyan" "$plain"
+  printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
+  printf 'Panel URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
+  printf 'Panel login: %s\n' "$PANEL_USERNAME"
+  printf 'Panel password: %s\n' "$PANEL_PASSWORD"
+  printf 'HAPP / INCY subscription: %s\n' "$SUBSCRIPTION_URL"
+  printf 'Mihomo subscription: %s\n' "$MIHOMO_SUBSCRIPTION_URL"
+  printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
+  printf '%bRouting:%b HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$cyan" "$plain"
 else
   printf '%bNODE CONNECTION — COPY TO THE MAIN 3X-UI PANEL%b\n' "$cyan" "$plain"
   printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
