@@ -1132,7 +1132,7 @@ umask 077
     printf '%s\n' '---------------------------------------------------------------'
     printf 'Panel URL: https://%s:%s/%s/\n' "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
     printf 'Panel login: %s\n' "$PANEL_USERNAME"
-    printf 'Panel password: %s\n'
+    printf 'Panel password: %s\n' "$PANEL_PASSWORD"
     printf 'HAPP / INCY subscription: %s\n' "$SUBSCRIPTION_URL"
     printf 'Mihomo subscription: %s\n' "$MIHOMO_SUBSCRIPTION_URL"
     printf '%s\n' '---------------------------------------------------------------'
