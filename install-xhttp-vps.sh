@@ -933,10 +933,10 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
 else
   INBOUND_SETTINGS="$(jq -nc '{clients:[],decryption:"none",encryption:"none",fallbacks:[]}')"
 fi
-STREAM_SETTINGS="$(jq -nc --arg d "$DOMAIN" --arg dest "127.0.0.1:${FALLBACK_PORT}" \
+STREAM_SETTINGS="$(jq -nc --arg d "$DOMAIN" --arg target "127.0.0.1:${FALLBACK_PORT}" \
   --arg private "$REALITY_PRIVATE" --arg public "$REALITY_PUBLIC" --arg sid "$SHORT_ID" '
   {network:"xhttp",security:"reality",externalProxy:[],
-   realitySettings:{show:false,xver:0,dest:$dest,privateKey:$private,minClientVer:"",maxClientVer:"",maxTimeDiff:0,
+   realitySettings:{show:false,xver:0,target:$target,privateKey:$private,minClientVer:"",maxClientVer:"",maxTimeDiff:0,
      serverNames:[$d],shortIds:[$sid],settings:{publicKey:$public,fingerprint:"firefox",serverName:"",spiderX:"/"}},
    xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",xPaddingObfsMode:false,
      noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}
@@ -1024,7 +1024,7 @@ if jq -e --arg d "$DOMAIN" --arg dest "127.0.0.1:${FALLBACK_PORT}" '
     .port==443 and .protocol=="vless" and .enable==true and
     ((.streamSettings | if type=="string" then fromjson else . end) as $s |
       $s.network=="xhttp" and $s.security=="reality" and
-      (($s.realitySettings.dest // $s.realitySettings.target) == $dest) and
+      (($s.realitySettings.target // $s.realitySettings.dest) == $dest) and
       (($s.realitySettings.serverNames // []) | index($d)) != null and
       $s.xhttpSettings.host==$d and $s.xhttpSettings.path=="/")
   ))' <<<"$VERIFY_RESPONSE" >/dev/null 2>&1; then
