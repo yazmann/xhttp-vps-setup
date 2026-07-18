@@ -271,11 +271,17 @@ VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
 read -rp "Route .ru domains and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
 WARP_ANSWER="${WARP_ANSWER//$'\r'/}"
+WARP_ANSWER="${WARP_ANSWER#$'\ufeff'}"
+WARP_ANSWER="${WARP_ANSWER#"${WARP_ANSWER%%[![:space:]]*}"}"
+WARP_ANSWER="${WARP_ANSWER%"${WARP_ANSWER##*[![:space:]]}"}"
 WARP_ANSWER="${WARP_ANSWER,,}"
 case "${WARP_ANSWER:-y}" in
   y|yes) ENABLE_WARP=1 ;;
   n|no) ENABLE_WARP=0 ;;
-  *) die "Expected yes or no for Cloudflare WARP routing." ;;
+  *)
+    printf -v SHOWN_WARP_ANSWER '%q' "$WARP_ANSWER"
+    die "Expected yes/y or no/n for Cloudflare WARP routing; received ${SHOWN_WARP_ANSWER}. Press Enter for yes."
+    ;;
 esac
 
 cat <<'EOF'
