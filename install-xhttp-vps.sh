@@ -238,8 +238,17 @@ if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: activ
 fi
 
 read -rp "Domain already pointed to this VPS (example: vpn.example.com): " DOMAIN
+# SSH/terminal paste can add a UTF-8 BOM, spaces or a carriage return. They are
+# not part of a domain, so remove only these accidental boundary characters.
+DOMAIN="${DOMAIN//$'\r'/}"
+DOMAIN="${DOMAIN#$'\ufeff'}"
+DOMAIN="${DOMAIN#"${DOMAIN%%[![:space:]]*}"}"
+DOMAIN="${DOMAIN%"${DOMAIN##*[![:space:]]}"}"
 DOMAIN="${DOMAIN,,}"
-[[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] || die "Invalid domain: ${DOMAIN}"
+if ! [[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]]; then
+  printf -v SHOWN_DOMAIN '%q' "$DOMAIN"
+  die "Invalid domain input: ${SHOWN_DOMAIN}. Enter a domain such as vpn.example.com (Latin letters, digits, hyphens and dots only)."
+fi
 [[ ${#DOMAIN} -le 253 ]] || die "Domain is longer than the DNS limit (253 characters)."
 IFS='.' read -r -a DOMAIN_LABELS <<<"$DOMAIN"
 for DOMAIN_LABEL in "${DOMAIN_LABELS[@]}"; do
@@ -262,11 +271,17 @@ VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
 read -rp "Route .ru domains and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
 WARP_ANSWER="${WARP_ANSWER//$'\r'/}"
+WARP_ANSWER="${WARP_ANSWER#$'\ufeff'}"
+# Keep only an ASCII yes/no answer. This makes paste artefacts harmless.
+WARP_ANSWER="$(LC_ALL=C tr -cd '[:alpha:]' <<<"$WARP_ANSWER")"
 WARP_ANSWER="${WARP_ANSWER,,}"
 case "${WARP_ANSWER:-y}" in
   y|yes) ENABLE_WARP=1 ;;
   n|no) ENABLE_WARP=0 ;;
-  *) die "Expected yes or no for Cloudflare WARP routing." ;;
+  *)
+    printf -v SHOWN_WARP_ANSWER '%q' "$WARP_ANSWER"
+    die "Expected yes/y or no/n for Cloudflare WARP routing; received ${SHOWN_WARP_ANSWER}. Press Enter for yes."
+    ;;
 esac
 
 cat <<'EOF'
