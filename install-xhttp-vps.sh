@@ -361,7 +361,11 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   MIHOMO_ROUTING_PATH="mihomo-routing-$(random_hex 10).yaml"
 fi
 SAFE_INSTANCE="$(printf '%s' "$INSTANCE_NAME" | tr -cs 'A-Za-z0-9_-' '_')"
-STATE_FILE="/root/3xui-vps-${SAFE_INSTANCE}.env"
+if [[ "$INSTALL_MODE" == "node" ]]; then
+  STATE_FILE="/root/3xui-node-${SAFE_INSTANCE}.env"
+else
+  STATE_FILE="/root/3xui-vps-${SAFE_INSTANCE}.env"
+fi
 RESULT_FILE="/root/xhttp-vps-result-${SAFE_INSTANCE}.txt"
 CERT_DIR="/root/cert/${DOMAIN}"
 PREV_QDISC="$(cat /proc/sys/net/core/default_qdisc 2>/dev/null || echo fq_codel)"
@@ -933,16 +937,16 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
 else
   INBOUND_SETTINGS="$(jq -nc '{clients:[],decryption:"none",encryption:"none",fallbacks:[]}')"
 fi
-STREAM_SETTINGS="$(jq -nc --arg d "$DOMAIN" --arg dest "127.0.0.1:${FALLBACK_PORT}" \
+STREAM_SETTINGS="$(jq -nc --arg d "$DOMAIN" --arg target "127.0.0.1:${FALLBACK_PORT}" \
   --arg private "$REALITY_PRIVATE" --arg public "$REALITY_PUBLIC" --arg sid "$SHORT_ID" '
   {network:"xhttp",security:"reality",externalProxy:[],
-   realitySettings:{show:false,xver:0,dest:$dest,privateKey:$private,minClientVer:"",maxClientVer:"",maxTimeDiff:0,
+   realitySettings:{show:false,xver:0,target:$target,privateKey:$private,minClientVer:"",maxClientVer:"",maxTimeDiff:0,
      serverNames:[$d],shortIds:[$sid],settings:{publicKey:$public,fingerprint:"firefox",serverName:"",spiderX:"/"}},
    xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",xPaddingObfsMode:false,
      noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}
 ')"
 SNIFFING="$(jq -nc '{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}')"
-INBOUND="$(jq -nc --arg remark "${VPN_NAME} — XHTTP Reality" --arg settings "$INBOUND_SETTINGS" \
+INBOUND="$(jq -nc --arg remark "${VPN_NAME}" --arg settings "$INBOUND_SETTINGS" \
   --arg stream "$STREAM_SETTINGS" --arg sniff "$SNIFFING" '
   {up:0,down:0,total:0,remark:$remark,enable:true,expiryTime:0,trafficReset:"never",listen:"",port:443,
    protocol:"vless",settings:$settings,streamSettings:$stream,tag:"in-443-xhttp-reality",sniffing:$sniff}
@@ -1024,7 +1028,7 @@ if jq -e --arg d "$DOMAIN" --arg dest "127.0.0.1:${FALLBACK_PORT}" '
     .port==443 and .protocol=="vless" and .enable==true and
     ((.streamSettings | if type=="string" then fromjson else . end) as $s |
       $s.network=="xhttp" and $s.security=="reality" and
-      (($s.realitySettings.dest // $s.realitySettings.target) == $dest) and
+      (($s.realitySettings.target // $s.realitySettings.dest) == $dest) and
       (($s.realitySettings.serverNames // []) | index($d)) != null and
       $s.xhttpSettings.host==$d and $s.xhttpSettings.path=="/")
   ))' <<<"$VERIFY_RESPONSE" >/dev/null 2>&1; then
