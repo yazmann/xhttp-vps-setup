@@ -272,8 +272,8 @@ if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contai
 read -rp "Route .ru domains and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
 WARP_ANSWER="${WARP_ANSWER//$'\r'/}"
 WARP_ANSWER="${WARP_ANSWER#$'\ufeff'}"
-WARP_ANSWER="${WARP_ANSWER#"${WARP_ANSWER%%[![:space:]]*}"}"
-WARP_ANSWER="${WARP_ANSWER%"${WARP_ANSWER##*[![:space:]]}"}"
+# Keep only an ASCII yes/no answer. This makes paste artefacts harmless.
+WARP_ANSWER="$(LC_ALL=C tr -cd '[:alpha:]' <<<"$WARP_ANSWER")"
 WARP_ANSWER="${WARP_ANSWER,,}"
 case "${WARP_ANSWER:-y}" in
   y|yes) ENABLE_WARP=1 ;;
