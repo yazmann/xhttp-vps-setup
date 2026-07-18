@@ -942,7 +942,7 @@ STREAM_SETTINGS="$(jq -nc --arg d "$DOMAIN" --arg dest "127.0.0.1:${FALLBACK_POR
      noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}
 ')"
 SNIFFING="$(jq -nc '{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}')"
-INBOUND="$(jq -nc --arg remark "${VPN_NAME} — XHTTP Reality" --arg settings "$INBOUND_SETTINGS" \
+INBOUND="$(jq -nc --arg remark "${VPN_NAME}" --arg settings "$INBOUND_SETTINGS" \
   --arg stream "$STREAM_SETTINGS" --arg sniff "$SNIFFING" '
   {up:0,down:0,total:0,remark:$remark,enable:true,expiryTime:0,trafficReset:"never",listen:"",port:443,
    protocol:"vless",settings:$settings,streamSettings:$stream,tag:"in-443-xhttp-reality",sniffing:$sniff}
