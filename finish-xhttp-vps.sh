@@ -205,7 +205,7 @@ if [[ -n "$EXISTING_INBOUND" ]]; then
       .clients = ((.clients // []) | if any(.id == $id or .subId == $sub) then . else . + [{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:"",subId:$sub,reset:0}] end)
     ' <<<"$IS")"
   fi
-  ST="$(jq -nc --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg p "$PRIV_R" --arg q "$PUB_R" --arg s "$SID" '{network:"xhttp",security:"reality",externalProxy:[],realitySettings:{show:false,xver:0,dest:$t,privateKey:$p,minClientVer:"",maxClientVer:"",maxTimeDiff:0,serverNames:[$d],shortIds:[$s],settings:{publicKey:$q,fingerprint:"firefox",serverName:"",spiderX:"/"}},xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}')"
+  ST="$(jq -nc --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg p "$PRIV_R" --arg q "$PUB_R" --arg s "$SID" '{network:"xhttp",security:"reality",externalProxy:[],realitySettings:{show:false,xver:0,target:$t,privateKey:$p,minClientVer:"",maxClientVer:"",maxTimeDiff:0,serverNames:[$d],shortIds:[$s],settings:{publicKey:$q,fingerprint:"firefox",serverName:"",spiderX:"/"}},xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}')"
   SN="$(jq -nc '{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}')"
   IB="$(jq -nc --argjson id "$INBOUND_ID" --arg r "${VPN_NAME} — XHTTP Reality" --arg s "$IS" --arg t "$ST" --arg n "$SN" '{id:$id,up:0,down:0,total:0,remark:$r,enable:true,expiryTime:0,trafficReset:"never",listen:"",port:443,protocol:"vless",settings:$s,streamSettings:$t,tag:"in-443-xhttp-reality",sniffing:$n}')"
   R="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' -X POST "$API_BASE/panel/api/inbounds/update/${INBOUND_ID}" --data-binary "$IB")"
@@ -224,7 +224,7 @@ else
   else
     IS="$(jq -nc '{clients:[],decryption:"none",encryption:"none",fallbacks:[]}')"
   fi
-  ST="$(jq -nc --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg p "$PRIV_R" --arg q "$PUB_R" --arg s "$SID" '{network:"xhttp",security:"reality",externalProxy:[],realitySettings:{show:false,xver:0,dest:$t,privateKey:$p,minClientVer:"",maxClientVer:"",maxTimeDiff:0,serverNames:[$d],shortIds:[$s],settings:{publicKey:$q,fingerprint:"firefox",serverName:"",spiderX:"/"}},xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}')"
+  ST="$(jq -nc --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg p "$PRIV_R" --arg q "$PUB_R" --arg s "$SID" '{network:"xhttp",security:"reality",externalProxy:[],realitySettings:{show:false,xver:0,target:$t,privateKey:$p,minClientVer:"",maxClientVer:"",maxTimeDiff:0,serverNames:[$d],shortIds:[$s],settings:{publicKey:$q,fingerprint:"firefox",serverName:"",spiderX:"/"}},xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}')"
   SN="$(jq -nc '{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}')"
   IB="$(jq -nc --arg r "${VPN_NAME} — XHTTP Reality" --arg s "$IS" --arg t "$ST" --arg n "$SN" '{up:0,down:0,total:0,remark:$r,enable:true,expiryTime:0,trafficReset:"never",listen:"",port:443,protocol:"vless",settings:$s,streamSettings:$t,tag:"in-443-xhttp-reality",sniffing:$n}')"
   R="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' -X POST "$API_BASE/panel/api/inbounds/add" --data-binary "$IB")"
@@ -289,7 +289,7 @@ done
 [[ "$READY" -eq 1 ]] || die "Private bearer API failed after the final restart. Last response: ${R:-<empty>}"
 INBOUND_OK=0; CLIENT_OK=0; SUB_OK=0; SELF_STEAL_OK=0; ROUTING_OK=0; MIHOMO_OK=0
 R="$(curl -kfsS "${API_AUTH[@]}" "$API_BASE/panel/api/inbounds/list" || true)"
-if jq -e --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" '.success==true and ((.obj|if type=="string" then fromjson else . end)|any(.port==443 and .protocol=="vless" and .enable==true and ((.streamSettings|if type=="string" then fromjson else . end) as $s|$s.network=="xhttp" and $s.security=="reality" and (($s.realitySettings.dest//$s.realitySettings.target)==$t) and (($s.realitySettings.serverNames//[])|index($d))!=null and $s.xhttpSettings.host==$d and $s.xhttpSettings.path=="/")))' <<<"$R" >/dev/null 2>&1; then INBOUND_OK=1; fi
+if jq -e --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" '.success==true and ((.obj|if type=="string" then fromjson else . end)|any(.port==443 and .protocol=="vless" and .enable==true and ((.streamSettings|if type=="string" then fromjson else . end) as $s|$s.network=="xhttp" and $s.security=="reality" and (($s.realitySettings.target//$s.realitySettings.dest)==$t) and (($s.realitySettings.serverNames//[])|index($d))!=null and $s.xhttpSettings.host==$d and $s.xhttpSettings.path=="/")))' <<<"$R" >/dev/null 2>&1; then INBOUND_OK=1; fi
 for _ in $(seq 1 20); do
   COVER_DATA="$(curl -kfsS --resolve "${DOMAIN}:443:127.0.0.1" --max-time 5 "https://${DOMAIN}/" 2>/dev/null || true)"
   if grep -Fq "$DOMAIN" <<<"$COVER_DATA"; then SELF_STEAL_OK=1; break; fi
