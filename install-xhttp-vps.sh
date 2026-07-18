@@ -238,8 +238,17 @@ if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: activ
 fi
 
 read -rp "Domain already pointed to this VPS (example: vpn.example.com): " DOMAIN
+# SSH/terminal paste can add a UTF-8 BOM, spaces or a carriage return. They are
+# not part of a domain, so remove only these accidental boundary characters.
+DOMAIN="${DOMAIN//$'\r'/}"
+DOMAIN="${DOMAIN#$'\ufeff'}"
+DOMAIN="${DOMAIN#"${DOMAIN%%[![:space:]]*}"}"
+DOMAIN="${DOMAIN%"${DOMAIN##*[![:space:]]}"}"
 DOMAIN="${DOMAIN,,}"
-[[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] || die "Invalid domain: ${DOMAIN}"
+if ! [[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]]; then
+  printf -v SHOWN_DOMAIN '%q' "$DOMAIN"
+  die "Invalid domain input: ${SHOWN_DOMAIN}. Enter a domain such as vpn.example.com (Latin letters, digits, hyphens and dots only)."
+fi
 [[ ${#DOMAIN} -le 253 ]] || die "Domain is longer than the DNS limit (253 characters)."
 IFS='.' read -r -a DOMAIN_LABELS <<<"$DOMAIN"
 for DOMAIN_LABEL in "${DOMAIN_LABELS[@]}"; do
