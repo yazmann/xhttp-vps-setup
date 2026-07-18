@@ -25,12 +25,10 @@
 Войдите на VPS как `root` и выполните:
 
 ```bash
-cd /root
-curl -fLO https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh
-curl -fLO https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh
-chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh
-./install-xhttp-vps.sh
+cd /root && curl -fsSLo install-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh && curl -fsSLo finish-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh && chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh && ./install-xhttp-vps.sh
 ```
+
+Команда скачивает актуальную версию из `main`. Стабильные версии после первого выпуска будут фиксироваться тегами и GitHub Releases.
 
 Скрипт задаст необходимые вопросы. После успешной установки он покажет готовый блок с панелью и подписками либо с параметрами ноды. Те же данные сохраняются в защищённом файле `/root/xhttp-vps-result-*.txt`.
 
