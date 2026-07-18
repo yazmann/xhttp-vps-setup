@@ -361,7 +361,11 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   MIHOMO_ROUTING_PATH="mihomo-routing-$(random_hex 10).yaml"
 fi
 SAFE_INSTANCE="$(printf '%s' "$INSTANCE_NAME" | tr -cs 'A-Za-z0-9_-' '_')"
-STATE_FILE="/root/3xui-vps-${SAFE_INSTANCE}.env"
+if [[ "$INSTALL_MODE" == "node" ]]; then
+  STATE_FILE="/root/3xui-node-${SAFE_INSTANCE}.env"
+else
+  STATE_FILE="/root/3xui-vps-${SAFE_INSTANCE}.env"
+fi
 RESULT_FILE="/root/xhttp-vps-result-${SAFE_INSTANCE}.txt"
 CERT_DIR="/root/cert/${DOMAIN}"
 PREV_QDISC="$(cat /proc/sys/net/core/default_qdisc 2>/dev/null || echo fq_codel)"
