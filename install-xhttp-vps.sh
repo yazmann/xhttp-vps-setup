@@ -933,7 +933,7 @@ REALITY_PUBLIC="$(jq -r '.obj.publicKey // .obj.public // empty' <<<"$RESPONSE")
 SHORT_ID="$(random_hex 8)"
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
   INBOUND_SETTINGS="$(jq -nc --arg id "$CLIENT_UUID" --arg email "$CLIENT_EMAIL" --arg sub "$CLIENT_SUB_ID" \
-    '{clients:[{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:"",subId:$sub,reset:0}],decryption:"none",encryption:"none",fallbacks:[]}')"
+    '{clients:[{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,reset:0}],decryption:"none",encryption:"none",fallbacks:[]}')"
 else
   INBOUND_SETTINGS="$(jq -nc '{clients:[],decryption:"none",encryption:"none",fallbacks:[]}')"
 fi
