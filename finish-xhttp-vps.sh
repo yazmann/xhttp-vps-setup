@@ -202,7 +202,7 @@ if [[ -n "$EXISTING_INBOUND" ]]; then
   [[ -n "$SID" ]] || SID="$(od -An -N 8 -tx1 /dev/urandom|tr -d ' \n')"
   if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_SUB_ID:-}" ]]; then
     IS="$(jq -c --arg id "$CLIENT_UUID" --arg email "${CLIENT_EMAIL:-${INSTANCE_NAME}-primary}" --arg sub "$CLIENT_SUB_ID" '
-      .clients = ((.clients // []) | if any(.id == $id or .subId == $sub) then . else . + [{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:"",subId:$sub,reset:0}] end)
+      .clients = ((.clients // []) | if any(.id == $id or .subId == $sub) then . else . + [{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,reset:0}] end)
     ' <<<"$IS")"
   fi
   ST="$(jq -nc --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg p "$PRIV_R" --arg q "$PUB_R" --arg s "$SID" '{network:"xhttp",security:"reality",externalProxy:[],realitySettings:{show:false,xver:0,target:$t,privateKey:$p,minClientVer:"",maxClientVer:"",maxTimeDiff:0,serverNames:[$d],shortIds:[$s],settings:{publicKey:$q,fingerprint:"firefox",serverName:"",spiderX:"/"}},xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}')"
@@ -220,7 +220,7 @@ else
     : "${CLIENT_UUID:=$(cat /proc/sys/kernel/random/uuid)}"
     : "${CLIENT_SUB_ID:=$(od -An -N 8 -tx1 /dev/urandom|tr -d ' \n')}"
     : "${CLIENT_EMAIL:=${INSTANCE_NAME}-primary}"
-    IS="$(jq -nc --arg id "$CLIENT_UUID" --arg email "$CLIENT_EMAIL" --arg sub "$CLIENT_SUB_ID" '{clients:[{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:"",subId:$sub,reset:0}],decryption:"none",encryption:"none",fallbacks:[]}')"
+    IS="$(jq -nc --arg id "$CLIENT_UUID" --arg email "$CLIENT_EMAIL" --arg sub "$CLIENT_SUB_ID" '{clients:[{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,reset:0}],decryption:"none",encryption:"none",fallbacks:[]}')"
   else
     IS="$(jq -nc '{clients:[],decryption:"none",encryption:"none",fallbacks:[]}')"
   fi
