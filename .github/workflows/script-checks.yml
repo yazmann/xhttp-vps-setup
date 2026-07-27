@@ -17,6 +17,16 @@ jobs:
         run: |
           bash -n install-xhttp-vps.sh
           bash -n finish-xhttp-vps.sh
+      - name: Check 3x-ui schema compatibility
+        run: |
+          if grep -Fq 'tgId:""' install-xhttp-vps.sh finish-xhttp-vps.sh; then
+            echo '3x-ui requires numeric client tgId values.'
+            exit 1
+          fi
+          if grep -Fq 'realitySettings:{show:false,xver:0,dest:' install-xhttp-vps.sh finish-xhttp-vps.sh; then
+            echo 'Use the current REALITY target field for panel editability.'
+            exit 1
+          fi
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@2.0.0
         with:
