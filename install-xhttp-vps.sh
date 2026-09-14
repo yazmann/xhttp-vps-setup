@@ -260,7 +260,7 @@ fi
 VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 [[ ${#VPN_NAME} -ge 1 && ${#VPN_NAME} -le 64 ]] || die "${NAME_LABEL} must contain 1-64 characters."
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
-read -rp "Use Cloudflare WARP as an extra exit for .ru domains only? [Y/n]: " WARP_ANSWER
+read -rp "Use Cloudflare WARP as an extra exit for Russian resources (domains and IPs)? [Y/n]: " WARP_ANSWER
 WARP_ANSWER="${WARP_ANSWER//$'\r'/}"
 WARP_ANSWER="${WARP_ANSWER#$'\ufeff'}"
 # Keep only an ASCII yes/no answer. This makes paste artefacts harmless.
@@ -959,11 +959,12 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       WARP_BACKUP="$(mktemp -d /root/xhttp-warp-backup.XXXXXXXX)"
       sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$WARP_BACKUP/x-ui.db'"
       XRAY="$(xhttp_warp_config "$WARP_OUT" <<<"$XRAY")"
+      xhttp_validate_warp_routes <<<"$XRAY" || die "Required Russian routing datasets are unavailable."
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
         VERIFY_WARP_RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
         VERIFY_WARP="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$VERIFY_WARP_RESPONSE")"
-        jq -e 'type=="object" and any(.outbounds[]?; .tag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-domain" and .domain==["domain:ru"] and .outboundTag=="warp") and all(.routing.rules[]?; .ruleTag!="xhttp-vps-warp-ru-ip")' <<<"$VERIFY_WARP" >/dev/null || die "WARP configuration could not be verified after saving."
+        jq -e 'type=="object" and any(.outbounds[]?; .tag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-domain" and .domain==["domain:ru","domain:su","domain:xn--p1ai","geosite:category-ru"] and .outboundTag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-ip" and .ip==["geoip:ru"] and .outboundTag=="warp") and .routing.domainStrategy=="IPOnDemand"' <<<"$VERIFY_WARP" >/dev/null || die "WARP configuration could not be verified after saving."
         WARP_CONFIGURED=1
         configure_warp_swap
       else

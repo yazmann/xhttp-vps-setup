@@ -7,13 +7,13 @@ source ./xhttp-vps-common.sh
 warp='{"tag":"warp","protocol":"wireguard","settings":{}}'
 base='{"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"blocked","protocol":"blackhole"}],"routing":{"rules":[{"inboundTag":["api"],"outboundTag":"api"},{"protocol":["bittorrent"],"outboundTag":"blocked"},{"ip":["geoip:private"],"outboundTag":"blocked"},{"outboundTag":"direct","network":"tcp,udp"}]}}'
 result="$(xhttp_warp_config "$warp" <<<"$base")"
-jq -e '.routing.rules[0].outboundTag=="api" and .routing.rules[1].protocol==["bittorrent"] and .routing.rules[2].ip==["geoip:private"] and .routing.rules[3].ruleTag=="xhttp-vps-warp-ru-domain" and .routing.rules[4].outboundTag=="direct" and ([.routing.rules[]|select(.outboundTag=="warp")]|length)==1 and .routing.rules[3].domain==["domain:ru"]' <<<"$result" >/dev/null
+jq -e '.routing.rules[0].outboundTag=="api" and .routing.rules[1].protocol==["bittorrent"] and .routing.rules[2].ip==["geoip:private"] and .routing.rules[3].ruleTag=="xhttp-vps-warp-ru-domain" and .routing.rules[4].ip==["geoip:ru"] and .routing.rules[5].outboundTag=="direct" and ([.routing.rules[]|select(.outboundTag=="warp")]|length)==2 and .routing.rules[3].domain==["domain:ru","domain:su","domain:xn--p1ai","geosite:category-ru"] and .routing.domainStrategy=="IPOnDemand"' <<<"$result" >/dev/null
 [[ "$result" == "$(xhttp_warp_config "$warp" <<<"$result")" ]]
 legacy="$(jq '.routing.rules=[{ruleTag:"xhttp-vps-warp-ru-ip",ip:["geoip:ru"],outboundTag:"warp"}]+.routing.rules' <<<"$base")"
 [[ "$result" == "$(xhttp_warp_config "$warp" <<<"$legacy")" ]]
 if xhttp_warp_config "$warp" <<<'{"routing":{"rules":[{"outboundTag":"blocked"}]}}' >/dev/null 2>&1; then exit 1; fi
 if xhttp_warp_config "$warp" <<<'{"routing":{"rules":[{"outboundTag":"direct"},{"protocol":["bittorrent"],"outboundTag":"blocked"}]}}' >/dev/null 2>&1; then exit 1; fi
-xhttp_warp_config "$warp" <<<'{}' | jq -e '.routing.rules|length==1' >/dev/null
+xhttp_warp_config "$warp" <<<'{}' | jq -e '.routing.rules|length==2' >/dev/null
 
 fixture='{"enable":true,"port":443,"settings":{"encryption":"none","clients":[{"id":"test-only","enable":true,"expiryTime":0}]},"streamSettings":{"network":"xhttp","security":"reality","xhttpSettings":{"path":"/custom","mode":"auto"},"realitySettings":{"privateKey":"must-not-leak","serverNames":["example.com"],"shortIds":["abcd"],"settings":{"publicKey":"test-public","fingerprint":"chrome"}}}}'
 probe="$(xhttp_probe_config 23456 <<<"$fixture")"
@@ -75,3 +75,6 @@ PROBE_WARP=on bash -c 'xhttp_run_probe "$(cat)" warp' <<<"$probe"
 if PROBE_VALIDATE_EXIT=1 bash -c 'xhttp_run_probe "$(cat)" direct' <<<"$probe"; then exit 1; fi
 [[ "$(find "$test_dir" -maxdepth 1 -name 'probe.*' | wc -l)" == 0 ]]
 printf 'Lifecycle tests passed.\n'
+# An explicit direct domain/IP route must not bypass regional protection.
+early_direct="$(jq '.routing.domainStrategy="AsIs" | .routing.rules=[{domain:["domain:ru"],outboundTag:"direct"},{ip:["geoip:ru"],outboundTag:"direct"}]+.routing.rules' <<<"$base")"
+xhttp_warp_config "$warp" <<<"$early_direct" | jq -e '.routing.domainStrategy=="IPOnDemand" and .routing.rules[3].ruleTag=="xhttp-vps-warp-ru-domain" and .routing.rules[4].ruleTag=="xhttp-vps-warp-ru-ip" and .routing.rules[5].outboundTag=="direct" and .routing.rules[6].outboundTag=="direct"' >/dev/null

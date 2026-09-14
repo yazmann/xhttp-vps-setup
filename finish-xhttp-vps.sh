@@ -294,6 +294,7 @@ if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
       WARP_BACKUP="$(mktemp -d /root/xhttp-warp-backup.XXXXXXXX)"
       sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$WARP_BACKUP/x-ui.db'"
       X="$(xhttp_warp_config "$WARP_OUT" <<<"$X")"
+      xhttp_validate_warp_routes <<<"$X" || die "Required Russian routing datasets are unavailable."
       R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" \
         --data-urlencode "xraySetting=$X" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if ! jq -e '.success==true' <<<"$R" >/dev/null; then

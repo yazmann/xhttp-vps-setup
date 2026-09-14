@@ -87,7 +87,7 @@ xhttp_warp_config() {
       | if .network=="tcp,udp" or .network=="udp,tcp" then del(.network) else . end
       | length==0;
     .outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
-    | .routing.domainStrategy=(.routing.domainStrategy // "AsIs")
+    | .routing.domainStrategy="IPOnDemand"
     | ((.routing.rules//[]) | map(select(
         .ruleTag!="xhttp-vps-warp-ru-domain" and .ruleTag!="xhttp-vps-warp-ru-ip"))) as $rules
     | [$rules | to_entries[] | select(.value|catchall) | .key] as $defaults
@@ -97,11 +97,34 @@ xhttp_warp_config() {
     | if ($defaults|length)==1 and
         ([.outbounds[] | select(.tag==$rules[$at].outboundTag and .protocol=="freedom")]|length)!=1
       then error("Only a terminal direct/freedom catch-all may follow WARP; review the terminal policy") else . end
-    | .routing.rules = $rules[:$at] + [
-        {type:"field",domain:["domain:ru"],outboundTag:"warp",network:"tcp,udp",ruleTag:"xhttp-vps-warp-ru-domain"}
-      ] + $rules[$at:]
+    | [.outbounds[] | select(.protocol=="blackhole") | .tag] as $blocked
+    | (.api.tag // "api") as $api
+    | def protected_rule:
+        .outboundTag as $tag
+        | ($tag==$api or ($blocked|index($tag))!=null);
+      .routing.rules = ($rules | map(select(protected_rule))) + [
+        {type:"field",domain:["domain:ru","domain:su","domain:xn--p1ai","geosite:category-ru"],outboundTag:"warp",network:"tcp,udp",ruleTag:"xhttp-vps-warp-ru-domain"},
+        {type:"field",ip:["geoip:ru"],outboundTag:"warp",network:"tcp,udp",ruleTag:"xhttp-vps-warp-ru-ip"}
+      ] + ($rules | map(select(protected_rule|not)))
   '
 }
+
+# Validate regional datasets with the installed core before changing panel state.
+xhttp_validate_warp_routes() (
+  set -Eeuo pipefail
+  umask 077
+  local check_dir
+  local -a binaries=(/usr/local/x-ui/bin/xray-linux-*)
+  [[ -x "${binaries[0]}" ]] || return 1
+  check_dir="$(mktemp -d /root/xhttp-route-check.XXXXXXXX)"
+  trap 'rm -f "$check_dir/config.json" "$check_dir/log"; rmdir "$check_dir"' EXIT
+  jq -ce '{outbounds:[{tag:"direct",protocol:"freedom"}],routing:{domainStrategy:.routing.domainStrategy,rules:[.routing.rules[]|select(.ruleTag=="xhttp-vps-warp-ru-domain" or .ruleTag=="xhttp-vps-warp-ru-ip")|.outboundTag="direct"]}}' > "$check_dir/config.json"
+  if ! XRAY_LOCATION_ASSET=/usr/local/x-ui/bin "${binaries[0]}" run -test -config "$check_dir/config.json" > "$check_dir/log" 2>&1; then
+    printf '%s\n' 'Russian routing validation failed; check geosite:category-ru and geoip:ru. No panel settings changed.' >&2
+    cat "$check_dir/log" >&2
+    return 1
+  fi
+)
 
 xhttp_managed_paths() {
   printf '%s\n' /etc/systemd/system/x-ui.service /usr/lib/systemd/system/x-ui.service \
