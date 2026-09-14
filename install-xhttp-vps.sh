@@ -47,6 +47,10 @@ unexpected_error() {
 trap 'unexpected_error "$?" "$LINENO"' ERR
 
 [[ ${EUID} -eq 0 ]] || die "Run as root."
+MEMORY_SCRIPT="$(dirname "$(readlink -f "$0")")/optimize-xhttp-memory.sh"
+[[ -r "$MEMORY_SCRIPT" ]] || die "Place optimize-xhttp-memory.sh alongside this installer."
+# shellcheck source=optimize-xhttp-memory.sh
+source "$MEMORY_SCRIPT"
 
 remove_installation() {
   local keep_script="${1:-0}" skip_confirmation="${2:-0}" script_path answer shown_answer
@@ -219,9 +223,8 @@ if ((${#EXISTING_STATES[@]} > 0)); then
     # shellcheck disable=SC1090
     source "${EXISTING_STATES[0]}"
     if [[ "${INSTALL_PHASE:-}" == "bootstrap" ]]; then
-      warn "An earlier installation stopped before 3x-ui was ready. Removing only its recorded partial changes, then restarting safely."
-      remove_installation 1 1
-      exec "$(readlink -f "$0")"
+      die "An earlier installation stopped during bootstrap. Partial data has been preserved." \
+        "Inspect the existing installation first. Use menu item 3 with confirmation only if you intend to remove it; finish-xhttp-vps.sh requires an installed panel and working certificates/Nginx."
     fi
   fi
   die "This VPS already has an installation managed by this script. Select menu item 3 to remove it, or run /root/finish-xhttp-vps.sh to repair an interrupted installation."
@@ -396,11 +399,14 @@ install_recovery_script() {
   temporary_file="${RECOVERY_SCRIPT}.new"
   source_file="$(dirname "$(readlink -f "$0")")/finish-xhttp-vps.sh"
   if [[ -r "$source_file" ]]; then
+    if [[ "$MEMORY_SCRIPT" != /root/optimize-xhttp-memory.sh ]]; then
+      install -m 700 "$MEMORY_SCRIPT" /root/optimize-xhttp-memory.sh
+    fi
     install -m 700 "$source_file" "$temporary_file"
     mv -f "$temporary_file" "$RECOVERY_SCRIPT"
   else
     rm -f "$temporary_file"
-    warn "Recovery script was not installed: upload finish-xhttp-vps.sh alongside this installer before starting. The repository is private, so anonymous GitHub downloads are unavailable."
+    warn "Recovery script was not installed: upload finish-xhttp-vps.sh alongside this installer before starting."
   fi
 }
 
@@ -440,7 +446,7 @@ configure_warp_swap() {
     return 0
   fi
   if ! printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab; then
-    swapoff /swapfile >/dev/null 2>&1 || true
+    swapoff /swapfile || die "Cannot persist or disable /swapfile. The active file has been preserved; repair /etc/fstab manually."
     rm -f /swapfile
     warn "Could not persist /swapfile in /etc/fstab; continuing without managed swap."
     return 0
@@ -635,7 +641,8 @@ port_busy 80 && die "TCP/80 is occupied."
 for p in "$PANEL_PORT" "$SUB_PORT" 443 "$FALLBACK_PORT"; do port_busy "$p" && die "TCP/${p} is occupied."; done
 XUI_VERSION="$(curl -fsS --max-time 10 https://api.github.com/repos/MHSanaei/3x-ui/releases/latest | jq -r '.tag_name // empty' || true)"
 [[ -n "$XUI_VERSION" ]] || die "Could not determine the current 3x-ui release from GitHub. Check VPS Internet access and try again."
-INSTALLER=/tmp/3x-ui-install.sh
+INSTALLER="$(mktemp /tmp/3x-ui-install.XXXXXXXX.sh)"
+trap 'rm -f "$INSTALLER"' EXIT
 curl -fL --retry 3 "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_VERSION}/install.sh" -o "$INSTALLER"
 chmod 700 "$INSTALLER"
 if [[ "$TLS_MODE" == "production" ]]; then
@@ -959,6 +966,9 @@ jq -e '.success == true' <<<"$RESPONSE" >/dev/null || die "Xray restart after in
 INBOUND_CONFIGURED=1
 write_state
 
+log "Applying the low-memory Xray and client XMUX profile"
+xhttp_memory_apply
+
 if [[ "$ENABLE_WARP" -eq 1 ]]; then
   log "Creating built-in WARP and RU routing"
   RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/data")"
@@ -981,7 +991,8 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       jq -e '.success == true and .obj != null' <<<"$RESPONSE" >/dev/null || die "Could not read Xray configuration: $RESPONSE"
       XRAY="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$RESPONSE")"
       jq -e 'type=="object" and (.outbounds|type=="array")' <<<"$XRAY" >/dev/null || die "Xray configuration has an unexpected format."
-      cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
+      WARP_BACKUP="$(mktemp -d /root/xhttp-warp-backup.XXXXXXXX)"
+      sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$WARP_BACKUP/x-ui.db'"
       XRAY="$(jq -c --argjson w "$WARP_OUT" '
         .outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
         | .routing=(.routing//{}) | .routing.domainStrategy="IPIfNonMatch"

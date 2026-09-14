@@ -21,6 +21,10 @@ unexpected_error() {
 }
 trap 'unexpected_error "$?" "$LINENO"' ERR
 [[ ${EUID} -eq 0 ]] || die "Run as root."
+MEMORY_SCRIPT="$(dirname "$(readlink -f "$0")")/optimize-xhttp-memory.sh"
+[[ -r "$MEMORY_SCRIPT" ]] || die "Place optimize-xhttp-memory.sh alongside this repair script."
+# shellcheck source=optimize-xhttp-memory.sh
+source "$MEMORY_SCRIPT"
 mapfile -t STATE_FILES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
 [[ ${#STATE_FILES[@]} -eq 1 ]] || die "Expected exactly one 3x-ui installer state file in /root; found ${#STATE_FILES[@]}."
 # shellcheck disable=SC1090
@@ -46,8 +50,13 @@ if [[ -r /etc/x-ui/install-result.env ]]; then
   PANEL_API_TOKEN="${STATE_PANEL_API_TOKEN:-${XUI_API_TOKEN:-${PANEL_API_TOKEN:-}}}"
   PANEL_PATH="${PANEL_PATH#/}"; PANEL_PATH="${PANEL_PATH%/}"
 fi
-for cmd in curl jq wg; do command -v "$cmd" >/dev/null || die "Missing command: $cmd"; done
+for cmd in curl jq wg sqlite3; do command -v "$cmd" >/dev/null || die "Missing command: $cmd"; done
 [[ -n "${PANEL_API_TOKEN:-}" ]] || die "State/install-result does not contain the 3x-ui API token."
+REPAIR_BACKUP="$(mktemp -d /root/xhttp-repair-backup.XXXXXXXX)"
+chmod 700 "$REPAIR_BACKUP"
+sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$REPAIR_BACKUP/x-ui.db'"
+chmod 600 "$REPAIR_BACKUP/x-ui.db"
+printf 'Database backup before repair: %s\n' "$REPAIR_BACKUP"
 
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
@@ -106,7 +115,7 @@ configure_warp_swap() {
     return 0
   fi
   if ! printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab; then
-    swapoff /swapfile >/dev/null 2>&1 || true
+    swapoff /swapfile || die "Cannot persist or disable /swapfile. The active file has been preserved; repair /etc/fstab manually."
     rm -f /swapfile
     printf '%bWARNING:%b Could not persist /swapfile in /etc/fstab; continuing without managed swap.\n' "$yellow" "$plain" >&2
     return 0
@@ -188,26 +197,22 @@ if [[ -z "$EXISTING_INBOUND" ]] && jq -e 'any(.port==443)' <<<"$INBOUNDS" >/dev/
   die "TCP/443 is occupied by an unmanaged inbound; recovery will not overwrite it."
 fi
 if [[ -n "$EXISTING_INBOUND" ]]; then
+  # Recovery must not reset live quotas, enable state or REALITY identities.
+  # Use the dedicated memory updater for tuning a functioning installation.
   INBOUND_ID="$(jq -r '.id' <<<"$EXISTING_INBOUND")"
   IS="$(jq -c '.settings|if type=="string" then fromjson else . end' <<<"$EXISTING_INBOUND")"
   EXISTING_STREAM="$(jq -c '.streamSettings|if type=="string" then fromjson else . end' <<<"$EXISTING_INBOUND")"
   PRIV_R="$(jq -r '.realitySettings.privateKey // empty' <<<"$EXISTING_STREAM")"
   PUB_R="$(jq -r '.realitySettings.settings.publicKey // empty' <<<"$EXISTING_STREAM")"
   SID="$(jq -r '(.realitySettings.shortIds // [])[0] // empty' <<<"$EXISTING_STREAM")"
-  if [[ -z "$PRIV_R" || -z "$PUB_R" ]]; then
-    R="$(curl -kfsS "${API_AUTH[@]}" "$API_BASE/panel/api/server/getNewX25519Cert")"
-    PRIV_R="$(jq -r '.obj.privateKey//.obj.private//empty' <<<"$R")"; PUB_R="$(jq -r '.obj.publicKey//.obj.public//empty' <<<"$R")"
-    [[ -n "$PRIV_R" && -n "$PUB_R" ]] || die "Reality key generation failed: $R"
-  fi
-  [[ -n "$SID" ]] || SID="$(od -An -N 8 -tx1 /dev/urandom|tr -d ' \n')"
+  [[ -n "$PRIV_R" && -n "$PUB_R" && -n "$SID" ]] \
+    || die "Existing inbound has incomplete REALITY keys/short IDs. Restore its original settings; recovery will not rotate client credentials."
   if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_SUB_ID:-}" ]]; then
     IS="$(jq -c --arg id "$CLIENT_UUID" --arg email "${CLIENT_EMAIL:-${INSTANCE_NAME}-primary}" --arg sub "$CLIENT_SUB_ID" '
       .clients = ((.clients // []) | if any(.id == $id or .subId == $sub) then . else . + [{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,reset:0}] end)
     ' <<<"$IS")"
   fi
-  ST="$(jq -nc --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg p "$PRIV_R" --arg q "$PUB_R" --arg s "$SID" '{network:"xhttp",security:"reality",externalProxy:[],realitySettings:{show:false,xver:0,target:$t,privateKey:$p,minClientVer:"",maxClientVer:"",maxTimeDiff:0,serverNames:[$d],shortIds:[$s],settings:{publicKey:$q,fingerprint:"firefox",serverName:"",spiderX:"/"}},xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}')"
-  SN="$(jq -nc '{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}')"
-  IB="$(jq -nc --argjson id "$INBOUND_ID" --arg r "${VPN_NAME}" --arg s "$IS" --arg t "$ST" --arg n "$SN" '{id:$id,up:0,down:0,total:0,remark:$r,enable:true,expiryTime:0,trafficReset:"never",listen:"",port:443,protocol:"vless",settings:$s,streamSettings:$t,tag:"in-443-xhttp-reality",sniffing:$n}')"
+  IB="$(jq -c --arg s "$IS" '.settings=$s' <<<"$EXISTING_INBOUND")"
   R="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' -X POST "$API_BASE/panel/api/inbounds/update/${INBOUND_ID}" --data-binary "$IB")"
   jq -e '.success==true' <<<"$R" >/dev/null || die "Inbound repair failed: $R"
   REALITY_PUBLIC="$PUB_R"; SHORT_ID="$SID"
@@ -236,6 +241,9 @@ else
   } >> "${STATE_FILES[0]}"
 fi
 
+CURRENT_STEP='applying the low-memory Xray and client XMUX profile'
+xhttp_memory_apply
+
 WARP_CONFIGURED=0
 if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
   CURRENT_STEP='configuring built-in WARP and RU routing'
@@ -261,7 +269,8 @@ if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
       jq -e '.success==true and .obj!=null' <<<"$R" >/dev/null || die "Could not read Xray configuration: $R"
       X="$(jq -c '.obj|if type=="string" then fromjson else . end|.xraySetting|if type=="string" then fromjson else . end' <<<"$R")"
       jq -e 'type=="object" and (.outbounds|type=="array")' <<<"$X" >/dev/null || die "Xray configuration has an unexpected format."
-      cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
+      WARP_BACKUP="$(mktemp -d /root/xhttp-warp-backup.XXXXXXXX)"
+      sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$WARP_BACKUP/x-ui.db'"
       X="$(jq -c --argjson w "$WARP_OUT" '.outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
         |.routing=(.routing//{})|.routing.domainStrategy="IPIfNonMatch"
         |.routing.rules=[

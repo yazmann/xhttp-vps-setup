@@ -25,7 +25,7 @@
 Войдите на VPS как `root` и выполните:
 
 ```bash
-cd /root && curl -fsSLo install-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh && curl -fsSLo finish-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh && chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh && ./install-xhttp-vps.sh
+cd /root && curl -fsSLo install-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh && curl -fsSLo finish-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh && curl -fsSLo optimize-xhttp-memory.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/optimize-xhttp-memory.sh && chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh optimize-xhttp-memory.sh && ./install-xhttp-vps.sh
 ```
 
 Команда скачивает актуальную версию из `main`. Стабильные версии после первого выпуска будут фиксироваться тегами и GitHub Releases.
@@ -45,12 +45,45 @@ cd /root && curl -fsSLo install-xhttp-vps.sh https://raw.githubusercontent.com/y
 
 ## Полное удаление
 
+Перед удалением сохраните нужные данные. Для изменения расхода памяти переустановка не требуется — используйте процедуру ниже.
+
 1. Запустите `/root/install-xhttp-vps.sh`.
 2. Выберите пункт `3` и подтвердите удаление ответом `yes` или `y`.
 
 Удаляются только компоненты и настройки, созданные этим скриптом: 3x-ui, управляемая конфигурация Nginx и сайта-заглушки, сертификаты, firewall-правила, swap (если его создал скрипт), результаты установки и записанные пакеты. Обновления безопасности Ubuntu сохраняются.
 
 Пункт `4` удаляет управляемую установку и сразу запускает настройку заново.
+
+## Профиль памяти 3x-ui / XHTTP
+
+Новая установка и восстановление применяют этот профиль:
+
+| Параметр | Значение | Где действует |
+|---|---|---|
+| `policy.levels.0.bufferSize` | `64` КиБ | Буфер внутренних pipe Xray уровня 0 |
+| `policy.levels.0.connIdle` | `180` секунд | Простой проксируемой сессии уровня 0 |
+| `xmux.maxConcurrency` | `"0"` | Отключает выбор пула по concurrency |
+| `xmux.maxConnections` | `"1"` | Размер клиентского пула XMUX |
+| `xmux.cMaxReuseTimes` | `"0"` | Без ограничения по этому счётчику |
+| `xmux.hMaxRequestTimes` | `"300-600"` | Порог запросов для смены транспорта |
+| `xmux.hMaxReusableSecs` | `"600-900"` | Окно повторного использования транспорта |
+| `xmux.hKeepAlivePeriod` | `0` | Значение по умолчанию ядра |
+
+Это снижение нагрузки на память, а не исправление доказанной утечки в Xray. `bufferSize` не выделяется целиком каждому TCP-сокету и не ограничивает всю память процесса; линейную экономию по числу ESTAB обещать нельзя. `connIdle` не закрывает простаивающий внешний HTTP/2 transport. `hMaxReusableSecs` проверяется при выборе транспорта; активные запросы могут пережить этот срок. `maxConnections=1` не является жёстким пределом общего числа сокетов при ротации.
+
+XMUX хранится в inbound панели для передачи клиентам через подписку. Обновите подписки и переподключите клиентов; на ноде проверьте также профиль, выдаваемый главной панелью. Строковые значения сохраняют совместимость экспорта в Mihomo. Старые клиенты могут игнорировать эти поля. Остальные уровни policy не меняются.
+
+Для уже работающего сервера, установленного этим проектом, скопируйте `optimize-xhttp-memory.sh` рядом с установленными скриптами и выполните:
+
+```bash
+sudo bash /root/optimize-xhttp-memory.sh
+```
+
+Скрипт читает локальный state-файл, обновляет только policy уровня 0 и XMUX inbound с тегом `in-443-xhttp-reality`, сохраняет клиентов, ключи, пути, лимиты и маршрутизацию. Перед записью создаётся закрытая папка `/root/xhttp-memory-backup.*` с online-копией SQLite и исходными JSON. При уже применённом профиле повторный запуск ничего не меняет. При изменении выполняется перезапуск Xray, текущие соединения могут оборваться. Не запускайте параллельно с редактированием панели.
+
+Если сохранение частично завершилось, путь к резервной копии выводится в ошибке. Исходный `xray.json` можно вернуть через редактор Xray Configs, а `inbound.json` — через API update того же inbound. Восстановление полной БД делайте только при остановленном `x-ui`, сохранив текущее состояние и учитывая файлы WAL/SHM; это откат всех изменений панели после копии.
+
+Сравните RSS, swap, FD, ESTAB и goroutine при сходной нагрузке до изменения, через 30 минут и через сутки. Снижение сразу после рестарта само по себе не доказывает устранение утечки. При тысячах внешних H2-соединений потребуется также обновление/исправление ядра или клиентского транспорта; регулярные рестарты и `MemoryMax` не заменяют диагностику.
 
 ## Используемые проекты
 
