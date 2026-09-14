@@ -47,6 +47,14 @@ unexpected_error() {
 trap 'unexpected_error "$?" "$LINENO"' ERR
 
 [[ ${EUID} -eq 0 ]] || die "Run as root."
+MEMORY_SCRIPT="$(dirname "$(readlink -f "$0")")/optimize-xhttp-memory.sh"
+[[ -r "$MEMORY_SCRIPT" ]] || die "Place optimize-xhttp-memory.sh alongside this installer."
+# shellcheck source=optimize-xhttp-memory.sh
+source "$MEMORY_SCRIPT"
+COMMON_SCRIPT="$(dirname "$(readlink -f "$0")")/xhttp-vps-common.sh"
+[[ -r "$COMMON_SCRIPT" ]] || die "Place xhttp-vps-common.sh alongside this installer."
+# shellcheck source=xhttp-vps-common.sh
+source "$COMMON_SCRIPT"
 
 remove_installation() {
   local keep_script="${1:-0}" skip_confirmation="${2:-0}" script_path answer shown_answer
@@ -72,78 +80,45 @@ remove_installation() {
       die "Removal cancelled: expected yes or y, but received ${shown_answer}."
     fi
   fi
-  warn "Removal restores the configuration created by this script and removes packages it installed. Ubuntu security updates are intentionally kept."
-
+  xhttp_validate_state && [[ -f "$MANAGED_BACKUP/ready" ]] \
+    || die "This installation has no valid ownership journal. Automatic removal is disabled; preserve the state and remove legacy components manually."
+  diff -u <(xhttp_managed_paths) <(cut -f2- "$MANAGED_BACKUP/paths") >/dev/null \
+    || die "Ownership journal does not match this installation."
+  awk -F '\t' '$1!=NR {exit 1}' "$MANAGED_BACKUP/paths" || die "Ownership journal indexes are invalid."
   systemctl disable --now x-ui 2>/dev/null || true
-  systemctl disable --now nginx 2>/dev/null || true
-  rm -f /etc/systemd/system/x-ui.service /usr/lib/systemd/system/x-ui.service /usr/bin/x-ui /etc/default/x-ui
-  rm -rf /usr/local/x-ui /etc/x-ui /var/log/x-ui
+  xhttp_restore_owned_files
   systemctl daemon-reload
-  rm -f /etc/nginx/sites-enabled/3xui-self-steal.conf /etc/nginx/sites-available/3xui-self-steal.conf
-  rm -rf /var/www/3xui-cover
-  rm -f "${RESULT_FILE:-}"
-  rm -f /etc/fail2ban/filter.d/3x-ui.conf /etc/fail2ban/jail.d/3x-ui.conf
-
+  # Shared services, ACME accounts, SSH access, packages and swap are retained.
+  # Delete only rules carrying this installation's unique marker.
+  if command -v ufw >/dev/null; then
+    while IFS= read -r rule_number; do
+      ufw --force delete "$rule_number"
+    done < <(ufw status numbered | awk -v marker="# xhttp-vps:${SAFE_INSTANCE} " '
+      index($0,marker) {sub(/^\[[[:space:]]*/, ""); sub(/\].*$/, ""); print}
+    ' | sort -rn)
+  fi
+  if command -v nginx >/dev/null && nginx -t; then systemctl reload nginx || true; fi
   if [[ -x /root/.acme.sh/acme.sh ]]; then
-    /root/.acme.sh/acme.sh --remove -d "$DOMAIN" >/dev/null 2>&1 || true
+    /root/.acme.sh/acme.sh --remove -d "$DOMAIN" || true
+    /root/.acme.sh/acme.sh --remove -d "$DOMAIN" --ecc || true
   fi
-  rm -rf "/root/cert/${DOMAIN}"
-  if [[ -d /root/.acme.sh ]] && [[ -z "$(find /root/cert -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]]; then
-    /root/.acme.sh/acme.sh --uninstall >/dev/null 2>&1 || true
-    rm -rf /root/.acme.sh /root/cert
-  fi
+  # Restore recorded runtime values only while they still match our settings.
+  [[ "$(sysctl -n net.core.default_qdisc)" != fq ]] || sysctl -w "net.core.default_qdisc=${PREV_QDISC:-fq_codel}" >/dev/null
+  [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" != bbr ]] || sysctl -w "net.ipv4.tcp_congestion_control=${PREV_CC:-cubic}" >/dev/null
+  [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" != 1 ]] || sysctl -w "net.ipv6.conf.all.disable_ipv6=${PREV_IPV6_ALL:-0}" >/dev/null
+  [[ "$(sysctl -n net.ipv6.conf.default.disable_ipv6)" != 1 ]] || sysctl -w "net.ipv6.conf.default.disable_ipv6=${PREV_IPV6_DEFAULT:-0}" >/dev/null
+  [[ "$(sysctl -n net.ipv6.conf.lo.disable_ipv6)" != 1 ]] || sysctl -w "net.ipv6.conf.lo.disable_ipv6=${PREV_IPV6_LO:-0}" >/dev/null
+  sysctl --system >/dev/null || true
+  mv -- "${states[0]}" "$MANAGED_BACKUP/removed-state.env"
+  printf 'Removal completed. Archives: %s\nPackages, swap, SSH rules and the shared ACME client were retained.\n' "$MANAGED_BACKUP"
 
-  [[ "${UFW_HTTP_RULE_EXISTED:-1}" == 1 ]] || ufw --force delete allow 80/tcp >/dev/null 2>&1 || true
-  [[ "${UFW_HTTPS_RULE_EXISTED:-1}" == 1 ]] || ufw --force delete allow 443/tcp >/dev/null 2>&1 || true
-  [[ "${UFW_PANEL_RULE_EXISTED:-1}" == 1 ]] || ufw --force delete allow "${PANEL_PORT}/tcp" >/dev/null 2>&1 || true
-  if [[ "${UFW_SSH_RULE_EXISTED:-${UFW_OPENSSH_EXISTED:-1}}" == 0 ]]; then
-    ufw --force delete allow "${SSH_PORT:-22}/tcp" >/dev/null 2>&1 || true
-  fi
-  [[ "${UFW_WAS_ACTIVE:-1}" == 1 ]] || ufw --force disable >/dev/null 2>&1 || true
-
-  rm -f /etc/modules-load.d/bbr.conf /etc/sysctl.d/99-xhttp-vps-network.conf /etc/sysctl.d/99-3xui-node-network.conf
-  if [[ "${SWAP_CREATED_BY_SCRIPT:-0}" == 1 ]]; then
-    if ! swapoff /swapfile; then
-      die "Could not disable the swap created by this script. Keep /swapfile and its /etc/fstab entry, free memory, then retry removal."
-    fi
-    if swapon --noheadings --show=NAME 2>/dev/null | grep -Fxq /swapfile; then
-      die "The swap created by this script is still active after swapoff. Removal stopped to protect the running system."
-    fi
-    sed -i '\|^/swapfile[[:space:]]\+none[[:space:]]\+swap[[:space:]]\+sw[[:space:]]\+0[[:space:]]\+0[[:space:]]*$|d' /etc/fstab
-    rm -f /swapfile
-  fi
-  rm -f /etc/apt/apt.conf.d/52xhttp-vps-auto-upgrades /etc/apt/apt.conf.d/53xhttp-vps-unattended-upgrades
-  sysctl -w "net.core.default_qdisc=${PREV_QDISC:-fq_codel}" >/dev/null 2>&1 || true
-  sysctl -w "net.ipv4.tcp_congestion_control=${PREV_CC:-cubic}" >/dev/null 2>&1 || true
-  sysctl -w "net.ipv6.conf.all.disable_ipv6=${PREV_IPV6_ALL:-0}" >/dev/null 2>&1 || true
-  sysctl -w "net.ipv6.conf.default.disable_ipv6=${PREV_IPV6_DEFAULT:-0}" >/dev/null 2>&1 || true
-  sysctl -w "net.ipv6.conf.lo.disable_ipv6=${PREV_IPV6_LO:-0}" >/dev/null 2>&1 || true
-
-  rm -f "${states[0]}"
-  if [[ -n "${PACKAGES_INSTALLED_BY_SCRIPT:-}" ]]; then
-    # shellcheck disable=SC2086
-    apt-get purge -y $PACKAGES_INSTALLED_BY_SCRIPT || true
-    apt-get autoremove -y || true
-  fi
-  printf '%bRemoval complete.%b The VPN installation, generated data and recorded configuration changes were removed. Ubuntu package updates were kept for security.\n' "$green" "$plain"
   [[ "$keep_script" == 1 ]] || rm -f "$script_path"
 }
 
 prepare_vps() {
-  local script_path
-  script_path="$(readlink -f "$0")"
-  mapfile -t states < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
-  if [[ ${#states[@]} -eq 1 ]]; then
-    printf '%bPREPARATION:%b a previous installation created by this script was found. It can be removed safely.\n' "$yellow" "$plain"
-    printf '%bPREPARATION:%b continuing without an extra prompt because menu item 4 was selected explicitly.\n' "$yellow" "$plain"
-    remove_installation 1 1
-    printf '%bVPS preparation complete.%b Restarting the installer.\n' "$green" "$plain"
-    exec "$script_path"
-  elif [[ ${#states[@]} -eq 0 ]]; then
-    die "No installation managed by this script was found. For safety, automatic preparation will not delete unknown Nginx, 3x-ui or firewall settings. Use a fresh VPS or remove those services manually."
-  else
-    die "Found ${#states[@]} managed installation state files. Remove or archive the extra state files before preparation."
-  fi
+  remove_installation 1 0
+  printf 'Managed installation archived. Shared packages remain; use a fresh VPS for a new installation.\n'
+  exit 0
 }
 
 show_current_settings() {
@@ -166,6 +141,21 @@ show_current_settings() {
   exit 0
 }
 
+RESUMING=0
+if [[ "${1:-}" == --resume ]]; then
+  RESUMING=1
+  mapfile -t RESUME_STATES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
+  [[ ${#RESUME_STATES[@]} == 1 ]] || die "Expected one state file for resume."
+  # shellcheck disable=SC1090
+  source "${RESUME_STATES[0]}"
+  STATE_FILE="${RESUME_STATES[0]}"
+  xhttp_validate_state && [[ -f "$MANAGED_BACKUP/ready" ]] || die "Resume requires the ownership journal from this installer version."
+  if [[ "${INSTALL_PHASE:-bootstrap}" != bootstrap ]]; then exec "$RECOVERY_SCRIPT"; fi
+  CERT_DIR="/root/cert/$DOMAIN"
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  UBUNTU_VERSION="$VERSION_ID"
+else
 HAS_CURRENT_SETTINGS=0
 mapfile -t MENU_STATE_FILES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
 mapfile -t MENU_RESULT_FILES < <(find /root -maxdepth 1 -type f -name 'xhttp-vps-result-*.txt' -print)
@@ -173,7 +163,7 @@ if [[ ${#MENU_STATE_FILES[@]} -eq 1 && ${#MENU_RESULT_FILES[@]} -eq 1 ]]; then
   HAS_CURRENT_SETTINGS=1
 fi
 
-printf '\nInstallation mode:\n1) Standalone VPN server\n2) Node for an existing 3x-ui panel\n3) Remove every change made by this script\n4) Prepare VPS for a fresh installation\n'
+printf '\nInstallation mode:\n1) Standalone VPN server\n2) Node for an existing 3x-ui panel\n3) Remove every change made by this script\n4) Archive installation and keep this installer\n'
 if [[ "$HAS_CURRENT_SETTINGS" -eq 1 ]]; then
   printf '5) Show current server settings\n'
 fi
@@ -219,9 +209,7 @@ if ((${#EXISTING_STATES[@]} > 0)); then
     # shellcheck disable=SC1090
     source "${EXISTING_STATES[0]}"
     if [[ "${INSTALL_PHASE:-}" == "bootstrap" ]]; then
-      warn "An earlier installation stopped before 3x-ui was ready. Removing only its recorded partial changes, then restarting safely."
-      remove_installation 1 1
-      exec "$(readlink -f "$0")"
+      exec "$(readlink -f "$0")" --resume
     fi
   fi
   die "This VPS already has an installation managed by this script. Select menu item 3 to remove it, or run /root/finish-xhttp-vps.sh to repair an interrupted installation."
@@ -235,6 +223,9 @@ if command -v nginx >/dev/null || \
 fi
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
   die "UFW is already active. To avoid changing an existing firewall policy, use a fresh VPS or disable and document the current rules before installation."
+fi
+if command -v ufw >/dev/null && ufw show added | grep -q '^ufw '; then
+  die "UFW has pre-existing rules, even though it is inactive. Use a VPS without a configured firewall policy."
 fi
 
 read -rp "Domain already pointed to this VPS (example: vpn.example.com): " DOMAIN
@@ -269,7 +260,7 @@ fi
 VPN_NAME="${VPN_NAME:-$DEFAULT_VPN_NAME}"
 [[ ${#VPN_NAME} -ge 1 && ${#VPN_NAME} -le 64 ]] || die "${NAME_LABEL} must contain 1-64 characters."
 if LC_ALL=C grep -q '[[:cntrl:]]' <<<"$VPN_NAME"; then die "${NAME_LABEL} contains control characters."; fi
-read -rp "Route .ru domains and geoip:ru through Cloudflare WARP? [Y/n]: " WARP_ANSWER
+read -rp "Use Cloudflare WARP as an extra exit for Russian resources (domains and IPs)? [Y/n]: " WARP_ANSWER
 WARP_ANSWER="${WARP_ANSWER//$'\r'/}"
 WARP_ANSWER="${WARP_ANSWER#$'\ufeff'}"
 # Keep only an ASCII yes/no answer. This makes paste artefacts harmless.
@@ -327,16 +318,6 @@ if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || (( SSH_PORT < 1 || SSH_PORT > 65535 )); th
 fi
 [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || SSH_PORT=22
 
-random_hex() { od -An -N "$1" -tx1 /dev/urandom | tr -d ' \n'; }
-port_busy() { command -v ss >/dev/null && ss -H -ltn "sport = :$1" 2>/dev/null | grep -q .; }
-random_port() {
-  local p
-  while :; do
-    p=$((20000 + 0x$(od -An -N 2 -tx2 /dev/urandom | tr -d ' ') % 40000))
-    [[ "$p" != "40000" && "$p" != "443" && "$p" != "80" ]] || continue
-    port_busy "$p" || { printf '%s' "$p"; return; }
-  done
-}
 
 PANEL_PORT="$(random_port)"
 while :; do SUB_PORT="$(random_port)"; [[ "$SUB_PORT" != "$PANEL_PORT" ]] && break; done
@@ -391,16 +372,24 @@ if command -v ufw >/dev/null; then
   ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])${PANEL_PORT}/tcp([[:space:]]|$)" && UFW_PANEL_RULE_EXISTED=1
 fi
 
+fi
+
 install_recovery_script() {
   local temporary_file source_file
+  if [[ "$COMMON_SCRIPT" != /root/xhttp-vps-common.sh ]]; then
+    install -m 700 "$COMMON_SCRIPT" /root/xhttp-vps-common.sh
+  fi
   temporary_file="${RECOVERY_SCRIPT}.new"
   source_file="$(dirname "$(readlink -f "$0")")/finish-xhttp-vps.sh"
   if [[ -r "$source_file" ]]; then
+    if [[ "$MEMORY_SCRIPT" != /root/optimize-xhttp-memory.sh ]]; then
+      install -m 700 "$MEMORY_SCRIPT" /root/optimize-xhttp-memory.sh
+    fi
     install -m 700 "$source_file" "$temporary_file"
     mv -f "$temporary_file" "$RECOVERY_SCRIPT"
   else
     rm -f "$temporary_file"
-    warn "Recovery script was not installed: upload finish-xhttp-vps.sh alongside this installer before starting. The repository is private, so anonymous GitHub downloads are unavailable."
+    warn "Recovery script was not installed: upload finish-xhttp-vps.sh alongside this installer before starting."
   fi
 }
 
@@ -440,7 +429,7 @@ configure_warp_swap() {
     return 0
   fi
   if ! printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab; then
-    swapoff /swapfile >/dev/null 2>&1 || true
+    swapoff /swapfile || die "Cannot persist or disable /swapfile. The active file has been preserved; repair /etc/fstab manually."
     rm -f /swapfile
     warn "Could not persist /swapfile in /etc/fstab; continuing without managed swap."
     return 0
@@ -458,6 +447,10 @@ VPN_NAME=$(printf '%q' "$VPN_NAME")
 INSTALL_MODE=${INSTALL_MODE}
 TLS_MODE=${TLS_MODE}
 INSTALL_PHASE=${INSTALL_PHASE:-bootstrap}
+MANAGED_BACKUP=${MANAGED_BACKUP:-}
+SAFE_INSTANCE=${SAFE_INSTANCE}
+COVER_LABEL=$(printf '%q' "${COVER_LABEL:-Cover site}")
+XUI_VERSION=${XUI_VERSION:-}
 DOMAIN=${DOMAIN}
 PUBLIC_IP=${PUBLIC_IP}
 PANEL_PORT=${PANEL_PORT}
@@ -496,12 +489,11 @@ EOF
   chmod 600 "$temporary_file"
   mv -f "$temporary_file" "$STATE_FILE"
   INSTALLATION_STARTED=1
-  if [[ ! -x "$RECOVERY_SCRIPT" ]]; then
-    install_recovery_script
-  fi
+  install_recovery_script
   umask 022
 }
 
+if [[ "$RESUMING" == 0 ]]; then
 cat <<EOF
 
 Configuration summary
@@ -519,8 +511,13 @@ Configuration summary
 EOF
 read -rp "Start installation? [y/N]: " CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Cancelled."
+MANAGED_BACKUP="$(mktemp -d /root/xhttp-managed.XXXXXXXX)"
+[[ ! -e "/root/.acme.sh/$DOMAIN" && ! -e "/root/.acme.sh/${DOMAIN}_ecc" ]] \
+  || die "An ACME certificate already exists for this domain. Use a dedicated domain."
+xhttp_record_ownership
 INSTALL_PHASE=bootstrap
 write_state
+fi
 
 log "Refreshing Ubuntu repositories and upgrading installed packages"
 export DEBIAN_FRONTEND=noninteractive
@@ -619,23 +616,27 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow "$SSH_PORT"/tcp comment 'SSH - preserve remote access'
 if [[ "$TLS_MODE" == "production" ]]; then
-  ufw allow 80/tcp comment 'ACME HTTP-01'
+  ufw allow 80/tcp comment "xhttp-vps:${SAFE_INSTANCE} ACME"
 fi
-ufw allow 443/tcp comment 'Xray XHTTP Reality'
+ufw allow 443/tcp comment "xhttp-vps:${SAFE_INSTANCE} XHTTP"
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
-  ufw allow "$PANEL_PORT"/tcp comment '3x-ui VPN panel via domain TLS'
+  ufw allow "$PANEL_PORT"/tcp comment "xhttp-vps:${SAFE_INSTANCE} panel"
 else
-  ufw allow "$PANEL_PORT"/tcp comment '3x-ui remote node panel via domain TLS'
+  ufw allow "$PANEL_PORT"/tcp comment "xhttp-vps:${SAFE_INSTANCE} panel"
 fi
 ufw --force enable
 
-log "Installing the latest stable 3x-ui"
+log "Installing or resuming 3x-ui"
+if [[ ! -x /usr/local/x-ui/x-ui || ! -s /etc/x-ui/install-result.env ]]; then
 systemctl stop nginx || true
+if [[ "$RESUMING" == 1 ]]; then systemctl stop x-ui 2>/dev/null || true; fi
 port_busy 80 && die "TCP/80 is occupied."
 for p in "$PANEL_PORT" "$SUB_PORT" 443 "$FALLBACK_PORT"; do port_busy "$p" && die "TCP/${p} is occupied."; done
-XUI_VERSION="$(curl -fsS --max-time 10 https://api.github.com/repos/MHSanaei/3x-ui/releases/latest | jq -r '.tag_name // empty' || true)"
+XUI_VERSION="${XUI_VERSION:-$(curl -fsS --max-time 10 https://api.github.com/repos/MHSanaei/3x-ui/releases/latest | jq -r '.tag_name // empty' || true)}"
 [[ -n "$XUI_VERSION" ]] || die "Could not determine the current 3x-ui release from GitHub. Check VPS Internet access and try again."
-INSTALLER=/tmp/3x-ui-install.sh
+write_state
+INSTALLER="$(mktemp /tmp/3x-ui-install.XXXXXXXX.sh)"
+trap 'rm -f "$INSTALLER"' EXIT
 curl -fL --retry 3 "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_VERSION}/install.sh" -o "$INSTALLER"
 chmod 700 "$INSTALLER"
 if [[ "$TLS_MODE" == "production" ]]; then
@@ -643,7 +644,6 @@ if [[ "$TLS_MODE" == "production" ]]; then
     XUI_PASSWORD="$PANEL_PASSWORD" XUI_PANEL_PORT="$PANEL_PORT" XUI_WEB_BASE_PATH="$PANEL_PATH" \
     XUI_DB_TYPE=sqlite XUI_SSL_MODE=domain XUI_DOMAIN="$DOMAIN" XUI_ACME_HTTP_PORT=80 \
     bash "$INSTALLER" "$XUI_VERSION"
-  [[ -s "$CERT_DIR/fullchain.pem" && -s "$CERT_DIR/privkey.pem" ]] || die "Let's Encrypt certificate issuance failed. Check DNS, Cloudflare DNS-only mode and TCP/80, then run /root/finish-xhttp-vps.sh."
 else
   XUI_NONINTERACTIVE=1 XUI_SERVER_IP="$PUBLIC_IP" XUI_USERNAME="$PANEL_USERNAME" \
     XUI_PASSWORD="$PANEL_PASSWORD" XUI_PANEL_PORT="$PANEL_PORT" XUI_WEB_BASE_PATH="$PANEL_PATH" \
@@ -656,6 +656,18 @@ else
     -subj "/CN=${DOMAIN}" -addext "subjectAltName=DNS:${DOMAIN}" >/dev/null 2>&1
   chmod 600 "$CERT_DIR/privkey.pem"
   chmod 644 "$CERT_DIR/fullchain.pem"
+  /usr/local/x-ui/x-ui cert -webCert "$CERT_DIR/fullchain.pem" -webCertKey "$CERT_DIR/privkey.pem" >/dev/null
+fi
+
+fi
+if [[ ! -s "$CERT_DIR/fullchain.pem" || ! -s "$CERT_DIR/privkey.pem" ]]; then
+  [[ -x /root/.acme.sh/acme.sh ]] || die "ACME bootstrap is incomplete. Restore /root/.acme.sh/acme.sh from the official 3x-ui installation."
+  systemctl stop nginx || true
+  install -d -m 700 "$CERT_DIR"
+  if ! /root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc --key-file "$CERT_DIR/privkey.pem" --fullchain-file "$CERT_DIR/fullchain.pem"; then
+    /root/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --server letsencrypt --keylength ec-256
+    /root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc --key-file "$CERT_DIR/privkey.pem" --fullchain-file "$CERT_DIR/fullchain.pem"
+  fi
   /usr/local/x-ui/x-ui cert -webCert "$CERT_DIR/fullchain.pem" -webCertKey "$CERT_DIR/privkey.pem" >/dev/null
 fi
 
@@ -779,48 +791,7 @@ cat > /var/www/3xui-cover/index.html <<HTML
 </body>
 </html>
 HTML
-cat > /etc/nginx/sites-available/3xui-self-steal.conf <<EOF
-server {
-    listen 127.0.0.1:${FALLBACK_PORT} ssl;
-    server_name ${DOMAIN};
-    ssl_certificate ${CERT_DIR}/fullchain.pem;
-    ssl_certificate_key ${CERT_DIR}/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    root /var/www/3xui-cover;
-    index index.html;
-    location ^~ /${SUB_PATH}/ {
-        proxy_pass https://127.0.0.1:${SUB_PORT};
-        proxy_ssl_verify off;
-        proxy_ssl_server_name on;
-        proxy_ssl_name ${DOMAIN};
-        proxy_set_header Host ${DOMAIN};
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-    location ^~ /${SUB_JSON_PATH:-disabled-json}/ {
-        proxy_pass https://127.0.0.1:${SUB_PORT};
-        proxy_ssl_verify off;
-        proxy_ssl_server_name on;
-        proxy_ssl_name ${DOMAIN};
-        proxy_set_header Host ${DOMAIN};
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-    location ^~ /${SUB_CLASH_PATH:-disabled-mihomo}/ {
-        proxy_pass https://127.0.0.1:${SUB_PORT};
-        proxy_ssl_verify off;
-        proxy_ssl_server_name on;
-        proxy_ssl_name ${DOMAIN};
-        proxy_set_header Host ${DOMAIN};
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-    location / { try_files \$uri \$uri/ /index.html; }
-}
-EOF
+xhttp_install_nginx
 rm -f /etc/nginx/sites-enabled/default
 ln -sfn /etc/nginx/sites-available/3xui-self-steal.conf /etc/nginx/sites-enabled/3xui-self-steal.conf
 nginx -t
@@ -834,6 +805,7 @@ fi
 
 INSTALL_PHASE=service-ready
 write_state
+if [[ "$RESUMING" == 1 ]]; then exec "$RECOVERY_SCRIPT"; fi
 
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
@@ -959,6 +931,9 @@ jq -e '.success == true' <<<"$RESPONSE" >/dev/null || die "Xray restart after in
 INBOUND_CONFIGURED=1
 write_state
 
+log "Applying the low-memory Xray and client XMUX profile"
+xhttp_memory_apply
+
 if [[ "$ENABLE_WARP" -eq 1 ]]; then
   log "Creating built-in WARP and RU routing"
   RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/warp/data")"
@@ -981,20 +956,15 @@ if [[ "$ENABLE_WARP" -eq 1 ]]; then
       jq -e '.success == true and .obj != null' <<<"$RESPONSE" >/dev/null || die "Could not read Xray configuration: $RESPONSE"
       XRAY="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$RESPONSE")"
       jq -e 'type=="object" and (.outbounds|type=="array")' <<<"$XRAY" >/dev/null || die "Xray configuration has an unexpected format."
-      cp -a /etc/x-ui/x-ui.db "/etc/x-ui/x-ui.db.before-warp.$(date +%Y%m%d-%H%M%S)"
-      XRAY="$(jq -c --argjson w "$WARP_OUT" '
-        .outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
-        | .routing=(.routing//{}) | .routing.domainStrategy="IPIfNonMatch"
-        | .routing.rules=[
-            {"type":"field","domain":["domain:ru"],"outboundTag":"warp","network":"tcp,udp","ruleTag":"xhttp-vps-warp-ru-domain"},
-            {"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp","ruleTag":"xhttp-vps-warp-ru-ip"}
-          ]+((.routing.rules//[])|map(select(.ruleTag!="xhttp-vps-warp-ru-domain" and .ruleTag!="xhttp-vps-warp-ru-ip")))
-      ' <<<"$XRAY")"
+      WARP_BACKUP="$(mktemp -d /root/xhttp-warp-backup.XXXXXXXX)"
+      sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$WARP_BACKUP/x-ui.db'"
+      XRAY="$(xhttp_warp_config "$WARP_OUT" <<<"$XRAY")"
+      xhttp_validate_warp_routes <<<"$XRAY" || die "Required Russian routing datasets are unavailable."
       RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" --data-urlencode "xraySetting=$XRAY" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if jq -e '.success == true' <<<"$RESPONSE" >/dev/null; then
         VERIFY_WARP_RESPONSE="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/")"
         VERIFY_WARP="$(jq -c '.obj | if type=="string" then fromjson else . end | .xraySetting | if type=="string" then fromjson else . end' <<<"$VERIFY_WARP_RESPONSE")"
-        jq -e 'type=="object" and any(.outbounds[]?; .tag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-domain" and .outboundTag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-ip" and .outboundTag=="warp")' <<<"$VERIFY_WARP" >/dev/null || die "WARP configuration could not be verified after saving."
+        jq -e 'type=="object" and any(.outbounds[]?; .tag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-domain" and .domain==["domain:ru","domain:su","domain:xn--p1ai","geosite:category-ru"] and .outboundTag=="warp") and any(.routing.rules[]?; .ruleTag=="xhttp-vps-warp-ru-ip" and .ip==["geoip:ru"] and .outboundTag=="warp") and .routing.domainStrategy=="IPOnDemand"' <<<"$VERIFY_WARP" >/dev/null || die "WARP configuration could not be verified after saving."
         WARP_CONFIGURED=1
         configure_warp_swap
       else
@@ -1097,6 +1067,14 @@ status_line() {
 }
 
 printf '\n==================== INSTALLATION AUDIT ====================\n'
+if [[ "$INSTALL_MODE" == standalone ]]; then
+  if xhttp_verify_traffic; then status_line "VLESS / WARP traffic probe" OK; else status_line "VLESS / WARP traffic probe" ERROR; fi
+else
+  status_line "VLESS traffic (no client yet)" SKIP
+  if [[ "${ENABLE_WARP:-0}" == 1 ]]; then
+    if xhttp_verify_traffic warp; then status_line "WARP tunnel traffic" OK; else status_line "WARP tunnel traffic" ERROR; fi
+  fi
+fi
 if [[ "${UBUNTU_UPGRADE_OK:-0}" -eq 1 ]] && apt-get check >/dev/null 2>&1 && [[ -z "$(dpkg --audit)" ]]; then status_line "Ubuntu package upgrade" OK "Ubuntu $UBUNTU_VERSION"; else status_line "Ubuntu package upgrade" ERROR; fi
 if apt-get check >/dev/null 2>&1 && [[ -z "$(dpkg --audit)" ]]; then status_line "Required packages" OK; else status_line "Required packages" ERROR; fi
 if systemctl is-enabled --quiet apt-daily.timer && systemctl is-enabled --quiet apt-daily-upgrade.timer && [[ -r /etc/apt/apt.conf.d/52xhttp-vps-auto-upgrades ]]; then status_line "Daily security updates" OK "automatic reboot disabled"; else status_line "Daily security updates" ERROR; fi
@@ -1134,9 +1112,9 @@ else
   status_line "Mihomo subscription" SKIP "managed by the main panel"
 fi
 if command -v fail2ban-client >/dev/null; then
-  if systemctl is-active --quiet fail2ban; then status_line "Fail2ban" OK; else status_line "Fail2ban" ERROR; fi
+  if systemctl is-active --quiet fail2ban; then status_line "Fail2ban daemon only" OK; else status_line "Fail2ban daemon only" ERROR; fi
 else
-  status_line "Fail2ban" SKIP "package unavailable"
+  status_line "Fail2ban daemon only" SKIP "package unavailable"
 fi
 if [[ "$ENABLE_WARP" -eq 1 ]]; then
   if [[ "${WARP_CONFIGURED:-0}" -eq 1 ]]; then status_line "WARP RU routing" OK; else status_line "WARP RU routing" ERROR; fi
@@ -1224,7 +1202,7 @@ fi
 clear || true
 printf '%b================================================================%b\n' "$green" "$plain"
 printf '%b                 VPN INSTALLATION COMPLETED SUCCESSFULLY%b\n' "$green" "$plain"
-printf '%b                     ALL CHECKS PASSED%b\n' "$green" "$plain"
+printf '%b                     ALL APPLICABLE CHECKS PASSED%b\n' "$green" "$plain"
 printf '%b================================================================%b\n\n' "$green" "$plain"
 printf '%b%s:%b          %s\n' "$blue" "$([[ "$INSTALL_MODE" == "standalone" ]] && echo "VPN" || echo "NODE")" "$plain" "$VPN_NAME"
 printf '%bTLS:%b          %s\n\n' "$blue" "$plain" "$([[ "$TLS_MODE" == "production" ]] && echo "Trusted Let's Encrypt certificate" || echo "Test self-signed certificate")"
@@ -1266,4 +1244,7 @@ if [[ -f /var/run/reboot-required ]]; then
   printf '\n%bREBOOT RECOMMENDED:%b Ubuntu updates require a reboot.\n' "$yellow" "$plain"
 fi
 printf '\n%bKeep the panel password and subscription URLs private.%b\n' "$yellow" "$plain"
+if [[ "$INSTALL_MODE" == node ]]; then
+  printf 'Node traffic is not verified until a client is provisioned by the main panel.\n'
+fi
 printf '%b================================================================%b\n' "$green" "$plain"

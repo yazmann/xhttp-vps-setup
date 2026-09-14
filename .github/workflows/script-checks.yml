@@ -17,6 +17,15 @@ jobs:
         run: |
           bash -n install-xhttp-vps.sh
           bash -n finish-xhttp-vps.sh
+          bash -n optimize-xhttp-memory.sh
+          bash -n tests/memory-profile.sh
+          bash -n xhttp-vps-common.sh
+          bash -n tests/lifecycle.sh
+          bash -n tests/fake-xray.sh
+      - name: Test memory profile preservation and idempotence
+        run: bash tests/memory-profile.sh
+      - name: Test routing, ownership and traffic probe configs
+        run: bash tests/lifecycle.sh
       - name: Check 3x-ui schema compatibility
         run: |
           if grep -Fq 'tgId:""' install-xhttp-vps.sh finish-xhttp-vps.sh; then
