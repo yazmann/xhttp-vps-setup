@@ -8,7 +8,7 @@
 - [NGINX](https://github.com/nginx/nginx) с сайтом-заглушкой на том же домене — для схемы Self-steal.
 - TLS-сертификат [Let's Encrypt](https://letsencrypt.org/), firewall [UFW](https://launchpad.net/ufw), [BBR](https://www.kernel.org/doc/html/latest/networking/bbr.html), отключение IPv6 и ежедневные обновления безопасности.
 - Подписки для [HAPP](https://github.com/Happ-proxy/happ-desktop), [INCY](https://incy.cc/) и [Mihomo](https://github.com/MetaCubeX/mihomo) с правилами маршрутизации [RoscomVPN](https://github.com/hydraponique/roscomvpn-routing).
-- [Cloudflare WARP](https://www.cloudflare.com/warp/) для трафика с VPS к российским доменам и IP-адресам; включён по умолчанию, отключается ответом `no`.
+- [Cloudflare WARP](https://www.cloudflare.com/warp/) — дополнительный выход только для `.ru`: сайт видит адрес WARP вместо адреса VPS. Остальной трафик использует обычный выход. Включён по умолчанию, отключается ответом `no`.
 - Самостоятельный VPN-сервер или удалённая нода для существующей панели.
 
 ## Требования
@@ -25,7 +25,7 @@
 Войдите на VPS как `root` и выполните:
 
 ```bash
-cd /root && curl -fsSLo install-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh && curl -fsSLo finish-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh && curl -fsSLo optimize-xhttp-memory.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/optimize-xhttp-memory.sh && chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh optimize-xhttp-memory.sh && ./install-xhttp-vps.sh
+cd /root && curl -fsSLo install-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh && curl -fsSLo finish-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh && curl -fsSLo optimize-xhttp-memory.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/optimize-xhttp-memory.sh && curl -fsSLo xhttp-vps-common.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/xhttp-vps-common.sh && chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh optimize-xhttp-memory.sh xhttp-vps-common.sh && ./install-xhttp-vps.sh
 ```
 
 Команда скачивает актуальную версию из `main`. Стабильные версии после первого выпуска будут фиксироваться тегами и GitHub Releases.
@@ -41,18 +41,31 @@ cd /root && curl -fsSLo install-xhttp-vps.sh https://raw.githubusercontent.com/y
 ```
 
 - Пункт `5` — показать текущие настройки; появляется после завершённой установки.
-- Если установка прервалась: `/root/finish-xhttp-vps.sh`.
+- Если установка прервалась: `/root/finish-xhttp-vps.sh`. При незавершённом bootstrap он продолжает установщик с прежними параметрами, затем возвращается к настройке панели. Повторный ввод домена/паролей не требуется.
+- Сохраняйте все четыре `.sh` рядом и обновляйте их вместе. Возобновление bootstrap требует журнала владения новой версии; старые установки без журнала не принимаются автоматически за управляемые этой версией.
 
-## Полное удаление
+## Удаление с архивированием
 
 Перед удалением сохраните нужные данные. Для изменения расхода памяти переустановка не требуется — используйте процедуру ниже.
 
 1. Запустите `/root/install-xhttp-vps.sh`.
 2. Выберите пункт `3` и подтвердите удаление ответом `yes` или `y`.
 
-Удаляются только компоненты и настройки, созданные этим скриптом: 3x-ui, управляемая конфигурация Nginx и сайта-заглушки, сертификаты, firewall-правила, swap (если его создал скрипт), результаты установки и записанные пакеты. Обновления безопасности Ubuntu сохраняются.
+Перед установкой сохраняются исходные управляемые файлы и каталог с журналом `/root/xhttp-managed.*`. При удалении текущие файлы 3x-ui, сайта, сертификата и конфигураций перемещаются в архив `removed.*` внутри этого каталога, а исходные файлы возвращаются. В том числе сохраняются добавленные позже файлы внутри управляемых каталогов. Архив содержит секреты и доступен только root.
 
-Пункт `4` удаляет управляемую установку и сразу запускает настройку заново.
+Пакеты, swap, SSH-правило, общий ACME-клиент и посторонние конфигурации Nginx остаются. Удаляются только firewall-правила с меткой данной установки. `purge` и `autoremove` не запускаются. Пункт `4` выполняет такое же архивирование, сохраняя файл установщика; новую установку автоматически не запускает. Для повторной чистой установки используйте свежий VPS.
+
+У старых установок без журнала автоматическое удаление блокируется: state-файл не доказывает происхождение всех файлов. Не создавайте журнал задним числом из текущего состояния.
+
+## Маршрутизация и проверка трафика
+
+WARP используется как дополнительный выход для `domain:ru` (домены `.ru` и их поддомены). Автоматическое `geoip:ru` убрано; правило старой версии с меткой `xhttp-vps-warp-ru-ip` удаляется при восстановлении. Произвольные пользовательские маршруты сохраняются. Учитываются ограничения и правила, уже стоящие перед региональным маршрутом; WARP вставляется перед завершающим `direct/freedom` catch-all. Неоднозначное общее правило в середине списка или завершающий запрет вызывает ошибку до сохранения.
+
+Домен должен быть известен Xray из запроса клиента или sniffing. Соединение с голым IP без доступного имени не классифицируется как `.ru`. При недоступности WARP совпавшие запросы не переводятся скриптом на прямой выход. Это скрывает адрес выхода VPS от соответствующего сайта, но не означает полной анонимности.
+
+Финальная проверка standalone запускает временный локальный клиент Xray и получает HTTPS-ответ через настоящий VLESS/XHTTP/REALITY inbound. Отдельная проверка WARP требует `warp=on` или `warp=plus` в Cloudflare trace. Этот диагностический запрос к Cloudflare проходит через WARP только во временном процессе; рабочие правила остаются `.ru`-only. Временный процесс и файлы удаляются при завершении. Ошибка любого обязательного теста не позволяет объявить установку успешной.
+
+У пустой ноды тест VLESS явно помечается `SKIP`: требуется клиент из главной панели. WARP при включении проверяется и на пустой ноде. Локальный тест не проверяет внешний firewall и доступность VPS из сети клиента. Статус Fail2ban относится только к демону, а не к настроенному jail панели.
 
 ## Профиль памяти 3x-ui / XHTTP
 

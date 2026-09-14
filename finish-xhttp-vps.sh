@@ -25,10 +25,23 @@ MEMORY_SCRIPT="$(dirname "$(readlink -f "$0")")/optimize-xhttp-memory.sh"
 [[ -r "$MEMORY_SCRIPT" ]] || die "Place optimize-xhttp-memory.sh alongside this repair script."
 # shellcheck source=optimize-xhttp-memory.sh
 source "$MEMORY_SCRIPT"
+COMMON_SCRIPT="$(dirname "$(readlink -f "$0")")/xhttp-vps-common.sh"
+[[ -r "$COMMON_SCRIPT" ]] || die "Place xhttp-vps-common.sh alongside this repair script."
+# shellcheck source=xhttp-vps-common.sh
+source "$COMMON_SCRIPT"
 mapfile -t STATE_FILES < <(find /root -maxdepth 1 -type f \( -name '3xui-vps-*.env' -o -name '3xui-node-*.env' \) -print)
 [[ ${#STATE_FILES[@]} -eq 1 ]] || die "Expected exactly one 3x-ui installer state file in /root; found ${#STATE_FILES[@]}."
 # shellcheck disable=SC1090
 source "${STATE_FILES[0]}"
+if [[ "${INSTALL_PHASE:-}" == bootstrap ]]; then
+  exec "$(dirname "$(readlink -f "$0")")/install-xhttp-vps.sh" --resume
+fi
+if [[ ! -x /usr/local/x-ui/x-ui || ! -s "/root/cert/${DOMAIN}/fullchain.pem" || ! -s /etc/nginx/sites-available/3xui-self-steal.conf ]]; then
+  xhttp_validate_state && [[ -f "$MANAGED_BACKUP/ready" ]] \
+    || die "Incomplete legacy installation has no ownership journal; restore its prerequisites manually."
+  printf 'INSTALL_PHASE=bootstrap\n' >> "${STATE_FILES[0]}"
+  exec "$(dirname "$(readlink -f "$0")")/install-xhttp-vps.sh" --resume
+fi
 : "${SUB_PATH:?State file does not contain SUB_PATH}"
 : "${INSTALL_MODE:=node}"
 : "${TLS_MODE:=production}"
@@ -57,6 +70,19 @@ chmod 700 "$REPAIR_BACKUP"
 sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$REPAIR_BACKUP/x-ui.db'"
 chmod 600 "$REPAIR_BACKUP/x-ui.db"
 printf 'Database backup before repair: %s\n' "$REPAIR_BACKUP"
+CERT_DIR="/root/cert/$DOMAIN"
+[[ -s "$CERT_DIR/fullchain.pem" && -s "$CERT_DIR/privkey.pem" ]] || die "Certificate files are missing. Resume bootstrap before configuring the panel."
+{
+  printf 'SUB_JSON_PATH=%q\n' "${SUB_JSON_PATH:-}"
+  printf 'SUB_CLASH_PATH=%q\n' "${SUB_CLASH_PATH:-}"
+  printf 'MIHOMO_ROUTING_PATH=%q\n' "${MIHOMO_ROUTING_PATH:-}"
+} >> "${STATE_FILES[0]}"
+# Keep proxy locations in sync with recovered subscription paths.
+NGINX_CONFIG=/etc/nginx/sites-available/3xui-self-steal.conf
+if [[ -e "$NGINX_CONFIG" ]]; then cp -a "$NGINX_CONFIG" "$REPAIR_BACKUP/nginx.conf"; fi
+xhttp_install_nginx
+systemctl enable --now nginx
+systemctl reload nginx
 
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
 API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
@@ -207,11 +233,7 @@ if [[ -n "$EXISTING_INBOUND" ]]; then
   SID="$(jq -r '(.realitySettings.shortIds // [])[0] // empty' <<<"$EXISTING_STREAM")"
   [[ -n "$PRIV_R" && -n "$PUB_R" && -n "$SID" ]] \
     || die "Existing inbound has incomplete REALITY keys/short IDs. Restore its original settings; recovery will not rotate client credentials."
-  if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_SUB_ID:-}" ]]; then
-    IS="$(jq -c --arg id "$CLIENT_UUID" --arg email "${CLIENT_EMAIL:-${INSTANCE_NAME}-primary}" --arg sub "$CLIENT_SUB_ID" '
-      .clients = ((.clients // []) | if any(.id == $id or .subId == $sub) then . else . + [{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,reset:0}] end)
-    ' <<<"$IS")"
-  fi
+  # Never recreate a client removed by the administrator on an existing inbound.
   IB="$(jq -c --arg s "$IS" '.settings=$s' <<<"$EXISTING_INBOUND")"
   R="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' -X POST "$API_BASE/panel/api/inbounds/update/${INBOUND_ID}" --data-binary "$IB")"
   jq -e '.success==true' <<<"$R" >/dev/null || die "Inbound repair failed: $R"
@@ -271,12 +293,7 @@ if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
       jq -e 'type=="object" and (.outbounds|type=="array")' <<<"$X" >/dev/null || die "Xray configuration has an unexpected format."
       WARP_BACKUP="$(mktemp -d /root/xhttp-warp-backup.XXXXXXXX)"
       sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$WARP_BACKUP/x-ui.db'"
-      X="$(jq -c --argjson w "$WARP_OUT" '.outbounds=((.outbounds//[])|map(select(.tag!="warp")))+[$w]
-        |.routing=(.routing//{})|.routing.domainStrategy="IPIfNonMatch"
-        |.routing.rules=[
-            {"type":"field","domain":["domain:ru"],"outboundTag":"warp","network":"tcp,udp","ruleTag":"xhttp-vps-warp-ru-domain"},
-            {"type":"field","ip":["geoip:ru"],"outboundTag":"warp","network":"tcp,udp","ruleTag":"xhttp-vps-warp-ru-ip"}
-          ]+((.routing.rules//[])|map(select(.ruleTag!="xhttp-vps-warp-ru-domain" and .ruleTag!="xhttp-vps-warp-ru-ip")))' <<<"$X")"
+      X="$(xhttp_warp_config "$WARP_OUT" <<<"$X")"
       R="$(curl -kfsS "${API_AUTH[@]}" -X POST "$API_BASE/panel/api/xray/update" \
         --data-urlencode "xraySetting=$X" --data-urlencode 'outboundTestUrl=https://www.cloudflare.com/cdn-cgi/trace')"
       if ! jq -e '.success==true' <<<"$R" >/dev/null; then
@@ -344,6 +361,14 @@ report() {
     FAILED=$((FAILED+1))
   fi
 }
+if [[ "$INSTALL_MODE" == standalone ]]; then
+  if xhttp_verify_traffic; then report "VLESS / WARP traffic probe" OK; else report "VLESS / WARP traffic probe" ERROR; fi
+else
+  report "VLESS traffic (no client yet)" SKIP
+  if [[ "${ENABLE_WARP:-0}" == 1 ]]; then
+    if xhttp_verify_traffic warp; then report "WARP tunnel traffic" OK; else report "WARP tunnel traffic" ERROR; fi
+  fi
+fi
 if apt-get check >/dev/null 2>&1 && [[ -z "$(dpkg --audit)" ]]; then report "Package update/install" OK; else report "Package update/install" ERROR; fi
 if systemctl is-active --quiet x-ui; then report "3x-ui panel" OK; else report "3x-ui panel" ERROR; fi
 if systemctl is-active --quiet nginx && nginx -t >/dev/null 2>&1; then report "nginx self-steal" OK; else report "nginx self-steal" ERROR; fi
@@ -367,7 +392,7 @@ else
   report "HAPP + INCY routing" SKIP
   report "Mihomo subscription" SKIP
 fi
-if command -v fail2ban-client >/dev/null; then if systemctl is-active --quiet fail2ban; then report "Fail2ban" OK; else report "Fail2ban" ERROR; fi; else report "Fail2ban" SKIP; fi
+if command -v fail2ban-client >/dev/null; then if systemctl is-active --quiet fail2ban; then report "Fail2ban daemon only" OK; else report "Fail2ban daemon only" ERROR; fi; else report "Fail2ban daemon only" SKIP; fi
 if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
   if [[ "$WARP_CONFIGURED" -eq 1 ]]; then report "WARP RU routing" OK; else report "WARP RU routing" ERROR; fi
 else
@@ -391,10 +416,14 @@ if [[ "$FAILED" -ne 0 ]]; then
   exit 1
 fi
 
+umask 077
+RESULT_FILE="${RESULT_FILE:-/root/xhttp-vps-result-${INSTANCE_NAME}.txt}"
+RESULT_TEMP="$(mktemp "${RESULT_FILE}.XXXXXXXX")"
+{
 clear || true
 printf '%b================================================================%b\n' "$green" "$plain"
 printf '%b                    VPN REPAIR COMPLETED SUCCESSFULLY%b\n' "$green" "$plain"
-printf '%b                     ALL CHECKS PASSED%b\n' "$green" "$plain"
+printf '%b                     ALL APPLICABLE CHECKS PASSED%b\n' "$green" "$plain"
 printf '%b================================================================%b\n\n' "$green" "$plain"
 printf '%bPANEL%b\n' "$cyan" "$plain"
 printf '  %bURL:%b      https://%s:%s/%s/\n' "$yellow" "$plain" "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
@@ -408,4 +437,11 @@ if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_S
 fi
 if [[ "$INSTALL_MODE" == "node" && -n "${PANEL_API_TOKEN:-}" ]]; then printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "$PANEL_API_TOKEN"; fi
 printf '%bSaved state:%b %s\n' "$blue" "$plain" "${STATE_FILES[0]}"
+if [[ "$INSTALL_MODE" == node ]]; then
+  printf 'Node traffic is not verified until a client is provisioned by the main panel.\n'
+fi
 printf '%b================================================================%b\n' "$green" "$plain"
+} | tee "$RESULT_TEMP"
+chmod 600 "$RESULT_TEMP"
+mv -f "$RESULT_TEMP" "$RESULT_FILE"
+printf 'INSTALL_PHASE=complete\n' >> "${STATE_FILES[0]}"
