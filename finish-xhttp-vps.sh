@@ -47,6 +47,27 @@ fi
 : "${TLS_MODE:=production}"
 : "${INSTANCE_NAME:=${NODE_NAME:-VPN}}"
 : "${VPN_NAME:=$INSTANCE_NAME}"
+# Legacy state files predate private panel modes and historically published the
+# panel. Preserve that behavior during repair instead of silently locking out
+# their administrators.
+: "${PANEL_ACCESS_MODE:=public}"
+: "${PANEL_ALLOWED_IP:=}"
+: "${TRANSPORT:=xhttp}"
+: "${INBOUND_TAG:=$(xhttp_inbound_tag_for "$TRANSPORT")}"
+: "${MAINTENANCE_TIMEZONE:=Europe/Moscow}"
+: "${SSH_HARDENING:=0}"
+if [[ -z "${SSH_ACCESS_MODE:-}" ]]; then
+  if [[ "$SSH_HARDENING" == 1 ]]; then SSH_ACCESS_MODE='admin'; else SSH_ACCESS_MODE='existing'; fi
+fi
+: "${ADMIN_USER:=root}"
+: "${ADMIN_KEYS_B64:=}"
+: "${ADMIN_KEY_FINGERPRINTS:=}"
+case "$TRANSPORT" in vision|xhttp) ;; *) die "State contains an invalid transport: ${TRANSPORT}" ;; esac
+case "$PANEL_ACCESS_MODE" in
+  private|public) ;;
+  allowlist) xhttp_valid_ipv4 "$PANEL_ALLOWED_IP" || die "State contains an invalid panel allowlist IPv4." ;;
+  *) die "State contains an invalid panel access mode: ${PANEL_ACCESS_MODE}" ;;
+esac
 STATE_PANEL_API_TOKEN="${PANEL_API_TOKEN:-}"
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
   : "${SUB_JSON_PATH:=json-$(od -An -N 10 -tx1 /dev/urandom|tr -d ' \n')}"
@@ -64,6 +85,11 @@ if [[ -r /etc/x-ui/install-result.env ]]; then
   PANEL_PATH="${PANEL_PATH#/}"; PANEL_PATH="${PANEL_PATH%/}"
 fi
 for cmd in curl jq wg sqlite3; do command -v "$cmd" >/dev/null || die "Missing command: $cmd"; done
+if [[ "$SSH_HARDENING" == 1 ]]; then
+  : "${ADMIN_USER:?State file does not contain ADMIN_USER}"
+  : "${ADMIN_KEYS_B64:?State file does not contain ADMIN_KEYS_B64}"
+  : "${ADMIN_KEY_FINGERPRINTS:=$(xhttp_authorized_key_fingerprints "$ADMIN_KEYS_B64")}"
+fi
 [[ -n "${PANEL_API_TOKEN:-}" ]] || die "State/install-result does not contain the 3x-ui API token."
 REPAIR_BACKUP="$(mktemp -d /root/xhttp-repair-backup.XXXXXXXX)"
 chmod 700 "$REPAIR_BACKUP"
@@ -85,7 +111,10 @@ systemctl enable --now nginx
 systemctl reload nginx
 
 API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
-API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
+API_HEADER_FILE="$(xhttp_create_api_header_file "$PANEL_API_TOKEN")" \
+  || die "The panel API token is empty or contains invalid control characters."
+API_AUTH=(-H "@${API_HEADER_FILE}")
+trap 'rm -f "${API_HEADER_FILE:-}"' EXIT
 
 build_warp_outbound() {
   local data_json="$1" config_json="$2" private_key client_id peer_key endpoint addresses reserved
@@ -161,7 +190,10 @@ if [[ "$READY" -eq 0 && "$R" == *'error: 401'* ]]; then
   read -r -s -p "New API token (input is hidden): " PANEL_API_TOKEN
   printf '\n' >&2
   if [[ -n "$PANEL_API_TOKEN" ]]; then
-    API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
+    rm -f "$API_HEADER_FILE"
+    API_HEADER_FILE="$(xhttp_create_api_header_file "$PANEL_API_TOKEN")" \
+      || die "The replacement API token contains invalid control characters."
+    API_AUTH=(-H "@${API_HEADER_FILE}")
     printf '\nPANEL_API_TOKEN=%q\n' "$PANEL_API_TOKEN" >> "${STATE_FILES[0]}"
     READY=0
     for _ in $(seq 1 15); do
@@ -185,8 +217,8 @@ S="$(jq -c --arg d "$DOMAIN" --arg title "$VPN_NAME" --argjson p "$SUB_PORT" --a
   |.subCertFile=$cert|.subKeyFile=$key|.subURI=("https://"+$d+$path)|.subTitle=$title' <<<"$S")"
 ROUTING_CONFIGURED=0; MIHOMO_CONFIGURED=0
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
-  HAPP_ROUTING="$(curl -fsSL --retry 3 --max-time 30 https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/refs/heads/main/HAPP/DEFAULT.DEEPLINK 2>/dev/null || true)"
-  INCY_ROUTING="$(curl -fsSL --retry 3 --max-time 30 https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/refs/heads/main/INCY/DEFAULT.DEEPLINK 2>/dev/null || true)"
+  HAPP_ROUTING="$(xhttp_fetch_verified_text "https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/${XHTTP_ROUTING_COMMIT}/HAPP/DEFAULT.DEEPLINK" "$XHTTP_HAPP_SHA256" 2>/dev/null || true)"
+  INCY_ROUTING="$(xhttp_fetch_verified_text "https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/${XHTTP_ROUTING_COMMIT}/INCY/DEFAULT.DEEPLINK" "$XHTTP_INCY_SHA256" 2>/dev/null || true)"
   if [[ "$HAPP_ROUTING" == happ://routing/onadd/* && "$INCY_ROUTING" == incy://routing/onadd/* ]]; then
     S="$(jq -c --arg happ "$HAPP_ROUTING" --arg incy "$INCY_ROUTING" --arg jp "/${SUB_JSON_PATH}/" --arg cp "/${SUB_CLASH_PATH}/" --arg ju "https://${DOMAIN}/${SUB_JSON_PATH}/" --arg cu "https://${DOMAIN}/${SUB_CLASH_PATH}/" '.subEnableRouting=true|.subRoutingRules=$happ|.subIncyEnableRouting=true|.subIncyRoutingRules=$incy|.subJsonEnable=true|.subJsonPath=$jp|.subJsonURI=$ju|.subClashEnable=true|.subClashPath=$cp|.subClashURI=$cu|.subClashEnableRouting=false' <<<"$S")"
     ROUTING_CONFIGURED=1; MIHOMO_CONFIGURED=1
@@ -200,7 +232,7 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
   MIHOMO_PROVIDER_URL="https://${DOMAIN}/${SUB_CLASH_PATH}/${CLIENT_SUB_ID}"
   MIHOMO_ROUTING_URL="https://${DOMAIN}/${MIHOMO_ROUTING_PATH}"
-  MIHOMO_TEMPLATE="$(curl -fsSL --retry 3 --max-time 60 https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/main/MIHOMO/default.yaml 2>/dev/null || true)"
+  MIHOMO_TEMPLATE="$(xhttp_fetch_verified_text "https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/${XHTTP_ROUTING_COMMIT}/MIHOMO/default.yaml" "$XHTTP_MIHOMO_SHA256" 2>/dev/null || true)"
   if grep -Fq '<ВВЕДИТЕ URL ПОДПИСКИ>' <<<"$MIHOMO_TEMPLATE"; then
     printf '%s\n' "$MIHOMO_TEMPLATE" | sed "s|<ВВЕДИТЕ URL ПОДПИСКИ>|${MIHOMO_PROVIDER_URL}|g" > "/var/www/3xui-cover/${MIHOMO_ROUTING_PATH}"
     chmod 644 "/var/www/3xui-cover/${MIHOMO_ROUTING_PATH}"
@@ -212,13 +244,13 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   fi
 fi
 
-CURRENT_STEP='creating or repairing VLESS + XHTTP + REALITY inbound'
+CURRENT_STEP="creating or repairing $(xhttp_transport_label "$TRANSPORT") inbound"
 printf '\n%b[STEP]%b %s\n' "$cyan" "$plain" "$CURRENT_STEP"
 R="$(curl -kfsS "${API_AUTH[@]}" "$API_BASE/panel/api/inbounds/list")"
 jq -e '.success==true and .obj!=null' <<<"$R" >/dev/null || die "Could not read inbounds: $R"
 INBOUNDS="$(jq -c '.obj|if type=="string" then fromjson else . end' <<<"$R")"
 jq -e 'type=="array"' <<<"$INBOUNDS" >/dev/null || die "Inbound list has an unexpected format."
-EXISTING_INBOUND="$(jq -c 'map(select(.tag=="in-443-xhttp-reality"))|first // empty' <<<"$INBOUNDS")"
+EXISTING_INBOUND="$(jq -c --arg tag "$INBOUND_TAG" 'map(select(.tag==$tag))|first // empty' <<<"$INBOUNDS")"
 if [[ -z "$EXISTING_INBOUND" ]] && jq -e 'any(.port==443)' <<<"$INBOUNDS" >/dev/null; then
   die "TCP/443 is occupied by an unmanaged inbound; recovery will not overwrite it."
 fi
@@ -247,13 +279,14 @@ else
     : "${CLIENT_UUID:=$(cat /proc/sys/kernel/random/uuid)}"
     : "${CLIENT_SUB_ID:=$(od -An -N 8 -tx1 /dev/urandom|tr -d ' \n')}"
     : "${CLIENT_EMAIL:=${INSTANCE_NAME}-primary}"
-    IS="$(jq -nc --arg id "$CLIENT_UUID" --arg email "$CLIENT_EMAIL" --arg sub "$CLIENT_SUB_ID" '{clients:[{id:$id,flow:"",email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,reset:0}],decryption:"none",encryption:"none",fallbacks:[]}')"
+    IS="$(jq -nc --arg id "$CLIENT_UUID" --arg email "$CLIENT_EMAIL" --arg sub "$CLIENT_SUB_ID" --arg flow "$(xhttp_transport_flow "$TRANSPORT")" '{clients:[{id:$id,flow:$flow,email:$email,limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,reset:0}],decryption:"none",encryption:"none",fallbacks:[]}')"
   else
     IS="$(jq -nc '{clients:[],decryption:"none",encryption:"none",fallbacks:[]}')"
   fi
-  ST="$(jq -nc --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg p "$PRIV_R" --arg q "$PUB_R" --arg s "$SID" '{network:"xhttp",security:"reality",externalProxy:[],realitySettings:{show:false,xver:0,target:$t,privateKey:$p,minClientVer:"",maxClientVer:"",maxTimeDiff:0,serverNames:[$d],shortIds:[$s],settings:{publicKey:$q,fingerprint:"firefox",serverName:"",spiderX:"/"}},xhttpSettings:{host:$d,path:"/",mode:"auto",xPaddingBytes:"100-1000",noSSEHeader:false,scMaxEachPostBytes:"1000000",scMaxBufferedPosts:30,scStreamUpServerSecs:"20-80",headers:{}}}')"
+  ST="$(xhttp_build_stream_settings "$TRANSPORT" "$DOMAIN" "127.0.0.1:${FALLBACK_PORT}" "$PRIV_R" "$PUB_R" "$SID")" \
+    || die "Could not build ${TRANSPORT} stream settings."
   SN="$(jq -nc '{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}')"
-  IB="$(jq -nc --arg r "${VPN_NAME}" --arg s "$IS" --arg t "$ST" --arg n "$SN" '{up:0,down:0,total:0,remark:$r,enable:true,expiryTime:0,trafficReset:"never",listen:"",port:443,protocol:"vless",settings:$s,streamSettings:$t,tag:"in-443-xhttp-reality",sniffing:$n}')"
+  IB="$(jq -nc --arg r "${VPN_NAME}" --arg s "$IS" --arg t "$ST" --arg n "$SN" --arg tag "$INBOUND_TAG" '{up:0,down:0,total:0,remark:$r,enable:true,expiryTime:0,trafficReset:"never",listen:"",port:443,protocol:"vless",settings:$s,streamSettings:$t,tag:$tag,sniffing:$n}')"
   R="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' -X POST "$API_BASE/panel/api/inbounds/add" --data-binary "$IB")"
   jq -e '.success==true' <<<"$R" >/dev/null || die "Inbound creation failed: $R"
   REALITY_PUBLIC="$PUB_R"; SHORT_ID="$SID"
@@ -263,8 +296,8 @@ else
   } >> "${STATE_FILES[0]}"
 fi
 
-CURRENT_STEP='applying the low-memory Xray and client XMUX profile'
-xhttp_memory_apply
+CURRENT_STEP='applying the low-memory Xray profile'
+xhttp_memory_apply "$INBOUND_TAG" "$TRANSPORT"
 
 WARP_CONFIGURED=0
 if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
@@ -316,14 +349,23 @@ done
 [[ "$READY" -eq 1 ]] || die "Private bearer API failed after the final restart. Last response: ${R:-<empty>}"
 INBOUND_OK=0; CLIENT_OK=0; SUB_OK=0; SELF_STEAL_OK=0; ROUTING_OK=0; MIHOMO_OK=0
 R="$(curl -kfsS "${API_AUTH[@]}" "$API_BASE/panel/api/inbounds/list" || true)"
-if jq -e --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" '.success==true and ((.obj|if type=="string" then fromjson else . end)|any(.port==443 and .protocol=="vless" and .enable==true and ((.streamSettings|if type=="string" then fromjson else . end) as $s|$s.network=="xhttp" and $s.security=="reality" and (($s.realitySettings.target//$s.realitySettings.dest)==$t) and (($s.realitySettings.serverNames//[])|index($d))!=null and $s.xhttpSettings.host==$d and $s.xhttpSettings.path=="/")))' <<<"$R" >/dev/null 2>&1; then INBOUND_OK=1; fi
+if jq -e --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg transport "$TRANSPORT" --arg tag "$INBOUND_TAG" '
+  .success==true and ((.obj|if type=="string" then fromjson else . end)|any(
+    .port==443 and .protocol=="vless" and .enable==true and .tag==$tag and
+    ((.streamSettings|if type=="string" then fromjson else . end) as $s |
+      $s.security=="reality" and (($s.realitySettings.target//$s.realitySettings.dest)==$t) and
+      (($s.realitySettings.serverNames//[])|index($d))!=null and
+      (if $transport=="vision" then
+         ($s.network=="tcp" or $s.network=="raw") and (($s.tcpSettings.header.type//"none")=="none")
+       else $s.network=="xhttp" and $s.xhttpSettings.host==$d and $s.xhttpSettings.path=="/" end))))
+' <<<"$R" >/dev/null 2>&1; then INBOUND_OK=1; fi
 for _ in $(seq 1 20); do
   COVER_DATA="$(curl -kfsS --resolve "${DOMAIN}:443:127.0.0.1" --max-time 5 "https://${DOMAIN}/" 2>/dev/null || true)"
   if grep -Fq "$DOMAIN" <<<"$COVER_DATA"; then SELF_STEAL_OK=1; break; fi
   sleep 1
 done
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
-  if jq -e --arg id "${CLIENT_UUID:-}" --arg sub "${CLIENT_SUB_ID:-}" '.success==true and ((.obj|if type=="string" then fromjson else . end)|any(.port==443 and .protocol=="vless" and ((.settings|if type=="string" then fromjson else . end).clients|any(.id==$id and .subId==$sub and .enable==true))))' <<<"$R" >/dev/null 2>&1; then CLIENT_OK=1; fi
+  if jq -e --arg id "${CLIENT_UUID:-}" --arg sub "${CLIENT_SUB_ID:-}" --arg flow "$(xhttp_transport_flow "$TRANSPORT")" '.success==true and ((.obj|if type=="string" then fromjson else . end)|any(.port==443 and .protocol=="vless" and ((.settings|if type=="string" then fromjson else . end).clients|any(.id==$id and .subId==$sub and .enable==true and (.flow//"")==$flow))))' <<<"$R" >/dev/null 2>&1; then CLIENT_OK=1; fi
   for _ in $(seq 1 20); do
     SUB_DATA="$(curl -kfsS --resolve "${DOMAIN}:443:127.0.0.1" --max-time 5 "https://${DOMAIN}/${SUB_PATH}/${CLIENT_SUB_ID}" 2>/dev/null || true)"
     [[ -n "$SUB_DATA" ]] && { SUB_OK=1; break; }
@@ -340,7 +382,23 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   fi
 fi
 
-/usr/local/x-ui/x-ui setting -listenIP 0.0.0.0 >/dev/null
+CURRENT_STEP='restoring panel network access policy'
+while IFS= read -r rule_number; do
+  ufw --force delete "$rule_number"
+done < <(ufw status numbered | awk -v marker="# xhttp-vps:${SAFE_INSTANCE} panel" '
+  index($0,marker) {sub(/^\[[[:space:]]*/, ""); sub(/\].*$/, ""); print}
+' | sort -rn)
+case "$PANEL_ACCESS_MODE" in
+  private) ;;
+  allowlist) ufw allow from "$PANEL_ALLOWED_IP" to any port "$PANEL_PORT" proto tcp comment "xhttp-vps:${SAFE_INSTANCE} panel" ;;
+  public) ufw allow "$PANEL_PORT"/tcp comment "xhttp-vps:${SAFE_INSTANCE} panel" ;;
+esac
+
+if [[ "$PANEL_ACCESS_MODE" == "private" ]]; then
+  /usr/local/x-ui/x-ui setting -listenIP 127.0.0.1 >/dev/null
+else
+  /usr/local/x-ui/x-ui setting -listenIP 0.0.0.0 >/dev/null
+fi
 systemctl restart x-ui
 PANEL_WEB_OK=0
 for _ in $(seq 1 20); do
@@ -348,6 +406,31 @@ for _ in $(seq 1 20); do
     -o /dev/null "https://${DOMAIN}:${PANEL_PORT}/${PANEL_PATH}/" 2>/dev/null; then PANEL_WEB_OK=1; break; fi
   sleep 1
 done
+PANEL_BIND_OK=0
+PANEL_LISTEN_ADDRESSES="$(ss -H -ltn "sport = :$PANEL_PORT" | awk '{print $4}')"
+if [[ "$PANEL_ACCESS_MODE" == "private" ]]; then
+  if [[ -n "$PANEL_LISTEN_ADDRESSES" ]] && ! grep -Evq '^127\.0\.0\.1:' <<<"$PANEL_LISTEN_ADDRESSES"; then PANEL_BIND_OK=1; fi
+else
+  if grep -Eq '^(0\.0\.0\.0|\*):' <<<"$PANEL_LISTEN_ADDRESSES"; then PANEL_BIND_OK=1; fi
+fi
+PANEL_FIREWALL_OK=0
+if [[ "$PANEL_ACCESS_MODE" == "private" ]]; then
+  if ! ufw status numbered | grep -Fq "# xhttp-vps:${SAFE_INSTANCE} panel"; then PANEL_FIREWALL_OK=1; fi
+else
+  if ufw status numbered | grep -Fq "# xhttp-vps:${SAFE_INSTANCE} panel"; then PANEL_FIREWALL_OK=1; fi
+fi
+
+CURRENT_STEP='repairing Fail2ban and weekly maintenance'
+FAIL2BAN_OK=0; MAINTENANCE_OK=0; SSH_ACCESS_OK=0
+if command -v fail2ban-client >/dev/null && xhttp_install_fail2ban_sshd; then FAIL2BAN_OK=1; fi
+if xhttp_install_maintenance; then MAINTENANCE_OK=1; fi
+if [[ "$SSH_HARDENING" == 1 ]]; then
+  CURRENT_STEP='repairing the key-only administrative SSH policy'
+  xhttp_install_ssh_access || die "Could not repair the selected SSH key access. Root SSH policy was not changed by this attempt."
+  xhttp_harden_sshd || die "OpenSSH hardening failed validation. Keep the current session open and repair sshd before disconnecting."
+  SSH_ACCESS_OK=1
+fi
+
 CURRENT_STEP='running completion audit'
 printf '\n%b==================== COMPLETION AUDIT ====================%b\n' "$blue" "$plain"
 FAILED=0
@@ -371,6 +454,12 @@ else
   fi
 fi
 if apt-get check >/dev/null 2>&1 && [[ -z "$(dpkg --audit)" ]]; then report "Package update/install" OK; else report "Package update/install" ERROR; fi
+if [[ "$MAINTENANCE_OK" -eq 1 ]] && systemctl is-enabled --quiet xhttp-vps-maintenance.timer; then report "Weekly conditional reboot" OK; else report "Weekly conditional reboot" ERROR; fi
+if [[ "$SSH_HARDENING" == 1 ]]; then
+  if [[ "$SSH_ACCESS_OK" -eq 1 ]] && xhttp_verify_ssh_access; then report "Key-only SSH administration" OK; else report "Key-only SSH administration" ERROR; fi
+else
+  report "Key-only SSH administration" SKIP
+fi
 if systemctl is-active --quiet x-ui; then report "3x-ui panel" OK; else report "3x-ui panel" ERROR; fi
 if systemctl is-active --quiet nginx && nginx -t >/dev/null 2>&1; then report "nginx self-steal" OK; else report "nginx self-steal" ERROR; fi
 if [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == bbr && "$(sysctl -n net.core.default_qdisc)" == fq ]]; then report "BBR + fq" OK; else report "BBR + fq" ERROR; fi
@@ -378,10 +467,16 @@ if [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" == 1 ]]; then report "IPv6 d
 if ufw status | grep -q '^Status: active'; then report "UFW firewall" OK; else report "UFW firewall" ERROR; fi
 if openssl x509 -in "/root/cert/${DOMAIN}/fullchain.pem" -checkend 86400 -noout >/dev/null 2>&1; then report "TLS certificate" OK; else report "TLS certificate" ERROR; fi
 if [[ "$PANEL_WEB_OK" -eq 1 ]]; then report "Panel HTTPS response" OK; else report "Panel HTTPS response" ERROR; fi
+if [[ "$PANEL_BIND_OK" -eq 1 && "$PANEL_FIREWALL_OK" -eq 1 ]]; then report "Panel network exposure" OK; else report "Panel network exposure" ERROR; fi
 if curl -kfsSI --resolve "$DOMAIN:$FALLBACK_PORT:127.0.0.1" "https://$DOMAIN:$FALLBACK_PORT/" >/dev/null; then report "Cover website" OK; else report "Cover website" ERROR; fi
 if [[ "$SELF_STEAL_OK" -eq 1 ]]; then report "Public self-steal website" OK; else report "Public self-steal website" ERROR; fi
+if xhttp_probe_foreign_sni; then report "Foreign SNI behavior" OK; else report "Foreign SNI behavior" ERROR; fi
+if xhttp_probe_no_sni; then report "Missing SNI behavior" OK; else report "Missing SNI behavior" ERROR; fi
+if xhttp_probe_h2_alpn; then report "Fallback ALPN (HTTP/2)" OK; else report "Fallback ALPN (HTTP/2)" ERROR; fi
+HTTP_REDIRECT_HEADERS="$(curl -fsSI --resolve "${DOMAIN}:80:127.0.0.1" "http://${DOMAIN}/" 2>/dev/null || true)"
+if grep -Eiq "^location:[[:space:]]*https://${DOMAIN}/" <<<"$HTTP_REDIRECT_HEADERS"; then report "HTTP / ACME webroot" OK; else report "HTTP / ACME webroot" ERROR; fi
 if ss -H -ltn "sport = :$SUB_PORT" | grep -q .; then report "Subscription service" OK; else report "Subscription service" ERROR; fi
-if [[ "$INBOUND_OK" -eq 1 ]] && ss -H -ltn 'sport = :443' | grep -q .; then report "XHTTP Reality self-steal" OK; else report "XHTTP Reality self-steal" ERROR; fi
+if [[ "$INBOUND_OK" -eq 1 ]] && ss -H -ltn 'sport = :443' | grep -q .; then report "VPN Reality self-steal" OK; else report "VPN Reality self-steal" ERROR; fi
 if [[ "$INSTALL_MODE" == "standalone" ]]; then
   if [[ "$CLIENT_OK" -eq 1 ]]; then report "First VLESS client" OK; else report "First VLESS client" ERROR; fi
   if [[ "$SUB_OK" -eq 1 ]]; then report "Client subscription URL" OK; else report "Client subscription URL" ERROR; fi
@@ -393,7 +488,7 @@ else
   report "HAPP + INCY routing" SKIP
   report "Mihomo subscription" SKIP
 fi
-if command -v fail2ban-client >/dev/null; then if systemctl is-active --quiet fail2ban; then report "Fail2ban daemon only" OK; else report "Fail2ban daemon only" ERROR; fi; else report "Fail2ban daemon only" SKIP; fi
+if [[ "$FAIL2BAN_OK" -eq 1 ]] && systemctl is-active --quiet fail2ban && fail2ban-client status sshd >/dev/null 2>&1; then report "Fail2ban sshd jail" OK; else report "Fail2ban sshd jail" ERROR; fi
 if [[ "${ENABLE_WARP:-0}" -eq 1 ]]; then
   if [[ "$WARP_CONFIGURED" -eq 1 ]]; then report "WARP RU routing" OK; else report "WARP RU routing" ERROR; fi
 else
@@ -420,6 +515,20 @@ fi
 umask 077
 RESULT_FILE="${RESULT_FILE:-/root/xhttp-vps-result-${INSTANCE_NAME}.txt}"
 RESULT_TEMP="$(mktemp "${RESULT_FILE}.XXXXXXXX")"
+case "$PANEL_ACCESS_MODE" in
+  private)
+    PANEL_DISPLAY_URL="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}/"
+    PANEL_ACCESS_DETAILS="localhost only; use an SSH tunnel or private Tailscale Serve"
+    ;;
+  allowlist)
+    PANEL_DISPLAY_URL="https://${DOMAIN}:${PANEL_PORT}/${PANEL_PATH}/"
+    PANEL_ACCESS_DETAILS="only ${PANEL_ALLOWED_IP} is allowed by UFW"
+    ;;
+  public)
+    PANEL_DISPLAY_URL="https://${DOMAIN}:${PANEL_PORT}/${PANEL_PATH}/"
+    PANEL_ACCESS_DETAILS="public Internet; enable panel 2FA immediately"
+    ;;
+esac
 {
 clear || true
 printf '%b================================================================%b\n' "$green" "$plain"
@@ -427,7 +536,8 @@ printf '%b                    VPN REPAIR COMPLETED SUCCESSFULLY%b\n' "$green" "$
 printf '%b                     ALL APPLICABLE CHECKS PASSED%b\n' "$green" "$plain"
 printf '%b================================================================%b\n\n' "$green" "$plain"
 printf '%bPANEL%b\n' "$cyan" "$plain"
-printf '  %bURL:%b      https://%s:%s/%s/\n' "$yellow" "$plain" "$DOMAIN" "$PANEL_PORT" "$PANEL_PATH"
+printf '  %bURL:%b      %s\n' "$yellow" "$plain" "$PANEL_DISPLAY_URL"
+printf '  %bAccess:%b   %s\n' "$yellow" "$plain" "$PANEL_ACCESS_DETAILS"
 printf '  %bLogin:%b    %s\n' "$yellow" "$plain" "$PANEL_USERNAME"
 printf '  %bPassword:%b %s\n\n' "$yellow" "$plain" "$PANEL_PASSWORD"
 if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_SUB_ID:-}" ]]; then
@@ -437,6 +547,19 @@ if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_S
   printf '  %bRouting:%b     HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$yellow" "$plain"
 fi
 if [[ "$INSTALL_MODE" == "node" && -n "${PANEL_API_TOKEN:-}" ]]; then printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "$PANEL_API_TOKEN"; fi
+if [[ "$PANEL_ACCESS_MODE" == "private" ]]; then
+  printf '%bSSH tunnel:%b ssh -p %s -L %s:127.0.0.1:%s %s@%s\n' "$cyan" "$plain" "$SSH_PORT" "$PANEL_PORT" "$PANEL_PORT" "$ADMIN_USER" "$DOMAIN"
+  printf '%bMobile:%b create the same local-port forwarding in Termius, or use private Tailscale Serve.\n\n' "$cyan" "$plain"
+fi
+printf '%bVPN transport:%b %s\n' "$blue" "$plain" "$(xhttp_transport_label "$TRANSPORT")"
+printf '%bSSH:%b %s\n' "$blue" "$plain" "$(xhttp_ssh_access_label "$SSH_ACCESS_MODE")"
+printf '%bMaintenance:%b Sunday 05:00 %s; reboot only when required\n' "$blue" "$plain" "$MAINTENANCE_TIMEZONE"
+if [[ "$PANEL_ACCESS_MODE" == public ]]; then
+  printf '%bSecurity:%b public panel selected; enable 2FA and store recovery codes offline.\n' "$yellow" "$plain"
+fi
+if [[ "$SSH_HARDENING" == 0 ]]; then
+  printf '%bSecurity:%b current SSH policy retained; root/password login may still be enabled.\n' "$red" "$plain"
+fi
 printf '%bSaved state:%b %s\n' "$blue" "$plain" "${STATE_FILES[0]}"
 if [[ "$INSTALL_MODE" == node ]]; then
   printf 'Node traffic is not verified until a client is provisioned by the main panel.\n'
@@ -445,4 +568,7 @@ printf '%b================================================================%b\n' 
 } | tee "$RESULT_TEMP"
 chmod 600 "$RESULT_TEMP"
 mv -f "$RESULT_TEMP" "$RESULT_FILE"
-printf 'INSTALL_PHASE=complete\n' >> "${STATE_FILES[0]}"
+{
+  printf 'SSH_ACCESS_MODE=%q\n' "$SSH_ACCESS_MODE"
+  printf 'INSTALL_PHASE=complete\n'
+} >> "${STATE_FILES[0]}"

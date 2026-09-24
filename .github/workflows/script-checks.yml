@@ -12,7 +12,7 @@ jobs:
   bash-and-shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check Bash syntax
         run: |
           bash -n install-xhttp-vps.sh
@@ -36,8 +36,46 @@ jobs:
             echo 'Use the current REALITY target field for panel editability.'
             exit 1
           fi
+          if grep -Eq 'resetTwoFactor=true|twoFactorEnable=false' install-xhttp-vps.sh finish-xhttp-vps.sh; then
+            echo 'Install and repair flows must not disable or reset panel 2FA.'
+            exit 1
+          fi
+          if grep -Fq 'roscomvpn-routing/refs/heads/main' install-xhttp-vps.sh finish-xhttp-vps.sh; then
+            echo 'Routing inputs must use the pinned commit and verified checksums.'
+            exit 1
+          fi
+          if grep -Eq 'MHSanaei/3x-ui/releases/latest|get\.acme\.sh' install-xhttp-vps.sh finish-xhttp-vps.sh xhttp-vps-common.sh; then
+            echo 'Root-level bootstrap dependencies must not use mutable latest/get endpoints.'
+            exit 1
+          fi
+          if grep -Fq 'API_AUTH=(-H "Authorization: Bearer' install-xhttp-vps.sh finish-xhttp-vps.sh optimize-xhttp-memory.sh; then
+            echo 'Do not expose the panel API token in curl process arguments.'
+            exit 1
+          fi
+          grep -Fq 'permit_root=no' xhttp-vps-common.sh
+          grep -Fq 'permit_root=prohibit-password' xhttp-vps-common.sh
+          grep -Fq 'PasswordAuthentication no' xhttp-vps-common.sh
+          grep -Fq 'AllowTcpForwarding local' xhttp-vps-common.sh
+          grep -Fq "SSH_ACCESS_MODE='admin'" install-xhttp-vps.sh
+          grep -Fq 'SSH_ACCESS_MODE=root-key' install-xhttp-vps.sh
+          grep -Fq 'SSH_ACCESS_MODE=existing' install-xhttp-vps.sh
+          grep -Fq 'systemctl --no-block reboot' xhttp-vps-common.sh
+          grep -Fq 'if [[ -f /var/run/reboot-required ]]' xhttp-vps-common.sh
+          grep -Fq -- '--webroot /var/www/3xui-cover' install-xhttp-vps.sh
+          grep -Fq 'location ^~ /.well-known/acme-challenge/' xhttp-vps-common.sh
+          grep -Fq 'xhttp_probe_foreign_sni' install-xhttp-vps.sh
+          grep -Fq 'xhttp_probe_no_sni' install-xhttp-vps.sh
+          grep -Fq 'xhttp_probe_h2_alpn' install-xhttp-vps.sh
+          if grep -Eq 'acme\.sh.*--standalone|XUI_SSL_MODE=domain' install-xhttp-vps.sh; then
+            echo 'ACME must use the persistent Nginx webroot, not a standalone listener.'
+            exit 1
+          fi
+          if grep -Eq 'Automatic-Reboot[[:space:]]+"true"' install-xhttp-vps.sh xhttp-vps-common.sh; then
+            echo 'Reboots must occur only in the managed conditional maintenance window.'
+            exit 1
+          fi
       - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@2.0.0
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         with:
           scandir: .
           severity: warning

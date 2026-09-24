@@ -36,12 +36,25 @@ xhttp_memory_api() {
     '
 }
 
+xhttp_memory_create_api_header_file() {
+  local token="$1" file
+  [[ -n "$token" && "$token" != *$'\n'* && "$token" != *$'\r'* ]] || return 1
+  file="$(mktemp /root/xhttp-api-headers.XXXXXXXX)"
+  chmod 600 "$file"
+  printf 'Authorization: Bearer %s\nX-Requested-With: XMLHttpRequest\n' "$token" > "$file"
+  printf '%s' "$file"
+}
+
 xhttp_memory_apply() (
   # Subshell confines umask and traps; callers keep their error handlers.
   set -Eeuo pipefail
   umask 077
-  local response template inbound updated_template updated_inbound backup_dir id test_url
+  local response template inbound updated_template updated_inbound backup_dir id test_url transport
   local target_tag="${1:-in-443-xhttp-reality}"
+  transport="${2:-xhttp}"
+  [[ "$transport" == xhttp || "$transport" == vision ]] || {
+    printf 'Unsupported transport for memory profile: %s\n' "$transport" >&2; return 1;
+  }
   [[ "$API_BASE" =~ ^https://127\.0\.0\.1:[0-9]+/ ]] || {
     printf 'Memory update requires a loopback HTTPS panel URL.\n' >&2; return 1;
   }
@@ -57,7 +70,15 @@ xhttp_memory_apply() (
   ' <<<"$response")" || return 1
   id="$(jq -er '.id | select(type=="number" and .>0 and floor==.)' <<<"$inbound")" || return 1
   updated_template="$(xhttp_memory_policy <<<"$template")" || return 1
-  updated_inbound="$(xhttp_memory_inbound <<<"$inbound")" || return 1
+  if [[ "$transport" == xhttp ]]; then
+    updated_inbound="$(xhttp_memory_inbound <<<"$inbound")" || return 1
+  else
+    jq -e '
+      (.streamSettings | if type=="string" then fromjson else . end) as $s
+      | .protocol=="vless" and ($s.network=="tcp" or $s.network=="raw")
+    ' <<<"$inbound" >/dev/null || return 1
+    updated_inbound="$inbound"
+  fi
   if [[ "$(jq -Sc . <<<"$template")" == "$(jq -Sc . <<<"$updated_template")" &&
         "$(jq -Sc . <<<"$inbound")" == "$(jq -Sc . <<<"$updated_inbound")" ]]; then
     printf 'Memory profile already applied; no restart needed.\n'
@@ -76,26 +97,34 @@ xhttp_memory_apply() (
     --data-urlencode "outboundTestUrl=$test_url" >/dev/null
   # Sending the complete original row preserves quotas, enable/expiry, clients,
   # REALITY keys, all short IDs, paths, sniffing and other transport settings.
-  xhttp_memory_api "/panel/api/inbounds/update/$id" -X POST \
-    -H 'Content-Type: application/json' --data-binary "$updated_inbound" >/dev/null
+  if [[ "$transport" == xhttp && "$(jq -Sc . <<<"$inbound")" != "$(jq -Sc . <<<"$updated_inbound")" ]]; then
+    xhttp_memory_api "/panel/api/inbounds/update/$id" -X POST \
+      -H 'Content-Type: application/json' --data-binary "$updated_inbound" >/dev/null
+  fi
   response="$(xhttp_memory_api /panel/api/xray/ -X POST)"
   jq -e '
     .obj | if type=="string" then fromjson else . end
     | .xraySetting | if type=="string" then fromjson else . end
     | .policy.levels["0"] | .bufferSize==64 and .connIdle==180
   ' <<<"$response" >/dev/null
-  response="$(xhttp_memory_api /panel/api/inbounds/list)"
-  jq -e --argjson id "$id" --argjson expected "$updated_inbound" '
-    def decode: if type=="string" then fromjson else . end;
-    .obj | decode | map(select(.id==$id))
-    | length==1 and ((.[0].streamSettings|decode) == ($expected.streamSettings|decode))
-  ' <<<"$response" >/dev/null
+  if [[ "$transport" == xhttp ]]; then
+    response="$(xhttp_memory_api /panel/api/inbounds/list)"
+    jq -e --argjson id "$id" --argjson expected "$updated_inbound" '
+      def decode: if type=="string" then fromjson else . end;
+      .obj | decode | map(select(.id==$id))
+      | length==1 and ((.[0].streamSettings|decode) == ($expected.streamSettings|decode))
+    ' <<<"$response" >/dev/null
+  fi
   xhttp_memory_api /panel/api/server/restartXrayService -X POST >/dev/null
-  printf 'Saved and verified: bufferSize=64 KiB, connIdle=180 s, XMUX pool=1.\n'
-  printf 'Refresh subscriptions and reconnect clients. This mitigates memory pressure; it does not prove an upstream leak is fixed.\n'
+  if [[ "$transport" == xhttp ]]; then
+    printf 'Saved and verified: bufferSize=64 KiB, connIdle=180 s, XMUX pool=1.\n'
+    printf 'Refresh subscriptions and reconnect clients. This mitigates memory pressure; it does not prove an upstream leak is fixed.\n'
+  else
+    printf 'Saved and verified: bufferSize=64 KiB and connIdle=180 s; Vision transport was preserved.\n'
+  fi
 )
 
-xhttp_memory_main() {
+xhttp_memory_main() (
   [[ ${EUID} -eq 0 ]] || { printf 'Run as root.\n' >&2; return 1; }
   local cmd
   for cmd in curl jq sqlite3; do command -v "$cmd" >/dev/null || return 1; done
@@ -105,10 +134,15 @@ xhttp_memory_main() {
   # shellcheck disable=SC1090
   source "${states[0]}"
   : "${PANEL_PORT:?}" "${PANEL_PATH:?}" "${PANEL_API_TOKEN:?}"
+  : "${TRANSPORT:=xhttp}"
+  : "${INBOUND_TAG:=$(printf 'in-443-%s-reality' "$TRANSPORT")}"
   API_BASE="https://127.0.0.1:${PANEL_PORT}/${PANEL_PATH}"
-  API_AUTH=(-H "Authorization: Bearer ${PANEL_API_TOKEN}" -H 'X-Requested-With: XMLHttpRequest')
-  xhttp_memory_apply
-}
+  API_HEADER_FILE="$(xhttp_memory_create_api_header_file "$PANEL_API_TOKEN")" \
+    || { printf 'The panel API token contains invalid control characters.\n' >&2; return 1; }
+  trap 'rm -f "${API_HEADER_FILE:-}"' EXIT
+  API_AUTH=(-H "@${API_HEADER_FILE}")
+  xhttp_memory_apply "$INBOUND_TAG" "$TRANSPORT"
+)
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -Eeuo pipefail

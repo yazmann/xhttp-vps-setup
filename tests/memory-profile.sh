@@ -30,6 +30,15 @@ xhttp_memory_api() {
 }
 xhttp_memory_apply
 if (xhttp_memory_apply missing-tag) >/dev/null 2>&1; then exit 1; fi
+vision_inbound='{"id":8,"protocol":"vless","tag":"in-443-vision-reality","streamSettings":{"network":"tcp","security":"reality","tcpSettings":{"header":{"type":"none"}}}}'
+xhttp_memory_api() {
+  case "$1" in
+    /panel/api/xray/) jq -nc --argjson x "$fixture_updated" '{success:true,obj:{xraySetting:$x}}' ;;
+    /panel/api/inbounds/list) jq -nc --argjson i "$vision_inbound" '{success:true,obj:[$i]}' ;;
+    *) printf 'Unexpected Vision mutation: %s\n' "$1" >&2; return 1 ;;
+  esac
+}
+xhttp_memory_apply in-443-vision-reality vision
 export API_BASE='https://example.com:12345/test'
 if (xhttp_memory_apply) >/dev/null 2>&1; then exit 1; fi
 
