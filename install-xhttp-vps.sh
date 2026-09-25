@@ -166,6 +166,7 @@ if [[ "${1:-}" == --resume ]]; then
   : "${ADMIN_USER:=root}"
   : "${ADMIN_KEYS_B64:=}"
   : "${ADMIN_KEY_FINGERPRINTS:=}"
+  : "${NODE_API_TOKEN:=}"
   xhttp_validate_state && [[ -f "$MANAGED_BACKUP/ready" ]] || die "Resume requires the ownership journal from this installer version."
   if [[ "${INSTALL_PHASE:-bootstrap}" != bootstrap ]]; then exec "$RECOVERY_SCRIPT"; fi
   CERT_DIR="/root/cert/$DOMAIN"
@@ -466,6 +467,7 @@ MIHOMO_ROUTING_PATH=""
 if [[ "$INSTALL_MODE" == "standalone" ]]; then PANEL_USERNAME="vpn$(random_hex 4)"; else PANEL_USERNAME="node$(random_hex 4)"; fi
 PANEL_PASSWORD="$(random_hex 18)"
 PANEL_API_TOKEN=""
+NODE_API_TOKEN=""
 CLIENT_UUID=""
 CLIENT_SUB_ID=""
 CLIENT_EMAIL=""
@@ -609,7 +611,8 @@ MIHOMO_ROUTING_PATH=${MIHOMO_ROUTING_PATH}
 FALLBACK_PORT=${FALLBACK_PORT}
 PANEL_USERNAME=${PANEL_USERNAME}
 PANEL_PASSWORD=${PANEL_PASSWORD}
-PANEL_API_TOKEN=${PANEL_API_TOKEN}
+PANEL_API_TOKEN=$(printf '%q' "$PANEL_API_TOKEN")
+NODE_API_TOKEN=$(printf '%q' "${NODE_API_TOKEN:-}")
 CLIENT_UUID=${CLIENT_UUID}
 CLIENT_SUB_ID=${CLIENT_SUB_ID}
 CLIENT_EMAIL=${CLIENT_EMAIL}
@@ -763,9 +766,9 @@ sysctl --system >/dev/null
 log "Network tuning active: BBR + fq, IPv6 disabled"
 
 log "Checking DNS"
-mapfile -t DNS_IPS < <(dig +short A "$DOMAIN" | sort -u)
-printf '%s\n' "${DNS_IPS[@]}" | grep -Fxq "$PUBLIC_IP" \
-  || die "${DOMAIN} does not resolve to ${PUBLIC_IP}. Cloudflare must be DNS only (grey cloud)."
+DNS_A_OUTPUT="$(dig +short A "$DOMAIN")"
+xhttp_validate_single_dns_ipv4 "$PUBLIC_IP" <<<"$DNS_A_OUTPUT" \
+  || die "${DOMAIN} must have exactly one A record, ${PUBLIC_IP}. Remove stale/proxy addresses; Cloudflare must be DNS only (grey cloud)."
 if dig +short AAAA "$DOMAIN" | grep -q .; then
   die "Remove the AAAA record for ${DOMAIN}, then run the script again."
 fi
@@ -1165,6 +1168,13 @@ for _ in $(seq 1 15); do
 done
 [[ "$API_READY" -eq 1 ]] || die "Private bearer API did not return after restart. Last response: ${RESPONSE:-<empty>}"
 
+if [[ "$INSTALL_MODE" == "node" && -z "${NODE_API_TOKEN:-}" ]]; then
+  log "Creating a least-privilege node-sync API token"
+  NODE_API_TOKEN="$(xhttp_rotate_node_sync_token xhttp-node-sync)" \
+    || die "Could not create the restricted node-sync API token. The local administrator token was not exported."
+  write_state
+fi
+
 # Verify the saved configuration through the panel API, not only the TCP port.
 INBOUND_VERIFIED=0; CLIENT_VERIFIED=0; SUBSCRIPTION_VERIFIED=0; PUBLIC_SELF_STEAL_VERIFIED=0
 CLIENT_ROUTING_VERIFIED=0; MIHOMO_VERIFIED=0; PANEL_SETTINGS_VERIFIED=0
@@ -1320,7 +1330,7 @@ else
 fi
 if [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == bbr && "$(sysctl -n net.core.default_qdisc)" == fq ]]; then status_line "BBR + fq" OK; else status_line "BBR + fq" ERROR; fi
 if [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" == 1 ]]; then status_line "IPv6 disabled" OK; else status_line "IPv6 disabled" ERROR; fi
-if printf '%s\n' "$(dig +short A "$DOMAIN")" | grep -Fxq "$PUBLIC_IP" && ! dig +short AAAA "$DOMAIN" | grep -q .; then status_line "DNS A / AAAA" OK "$DOMAIN → $PUBLIC_IP"; else status_line "DNS A / AAAA" ERROR; fi
+if xhttp_validate_single_dns_ipv4 "$PUBLIC_IP" <<<"$(dig +short A "$DOMAIN")" && ! dig +short AAAA "$DOMAIN" | grep -q .; then status_line "DNS A / AAAA" OK "$DOMAIN → $PUBLIC_IP"; else status_line "DNS A / AAAA" ERROR; fi
 if ufw status | grep -q '^Status: active'; then status_line "UFW firewall" OK; else status_line "UFW firewall" ERROR; fi
 if openssl x509 -in "$CERT_DIR/fullchain.pem" -checkend 86400 -noout >/dev/null 2>&1; then
   if [[ "$TLS_MODE" == "production" ]]; then
@@ -1360,6 +1370,7 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   if [[ "$CLIENT_ROUTING_VERIFIED" -eq 1 ]]; then status_line "HAPP + INCY routing" OK "RoscomVPN profiles injected"; else status_line "HAPP + INCY routing" ERROR; fi
   if [[ "$MIHOMO_VERIFIED" -eq 1 ]]; then status_line "Mihomo subscription" OK "YAML endpoint verified"; else status_line "Mihomo subscription" ERROR; fi
 else
+  if [[ -n "${NODE_API_TOKEN:-}" ]]; then status_line "Node-sync API token" OK "restricted scope"; else status_line "Node-sync API token" ERROR; fi
   status_line "First VLESS client" SKIP "managed by the main panel"
   status_line "Client subscription URL" SKIP "managed by the main panel"
   status_line "HAPP + INCY routing" SKIP "managed by the main panel"
@@ -1397,7 +1408,7 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   printf -v MODE_DETAILS 'FIRST CLIENT: %s\nHAPP / INCY SUBSCRIPTION: %s\nMIHOMO SUBSCRIPTION:      %s\n\n%s' \
     "$CLIENT_EMAIL" "$SUBSCRIPTION_URL" "$MIHOMO_SUBSCRIPTION_URL" "$STANDALONE_STATUS_MESSAGE"
 else
-  printf -v MODE_DETAILS 'API TOKEN:   %s\n\n%s\nThe local inbound is already created; do not deploy a duplicate on port 443.' "${PANEL_API_TOKEN:-not provided by this 3x-ui version}" "$NODE_STATUS_MESSAGE"
+  printf -v MODE_DETAILS 'NODE TOKEN:  %s\n\n%s\nThe local inbound is already created; do not deploy a duplicate on port 443.' "${NODE_API_TOKEN:-not created}" "$NODE_STATUS_MESSAGE"
 fi
 
 case "$PANEL_ACCESS_MODE" in
@@ -1450,7 +1461,7 @@ umask 077
     printf 'Enabled: yes\n'
     printf 'Allow private address: no\n'
     printf 'TLS verification: Verify (default CA)\n'
-    printf 'API Token: %s\n' "$PANEL_API_TOKEN"
+    printf 'API Token: %s\n' "$NODE_API_TOKEN"
     printf '%s\n' '---------------------------------------------------------------'
   fi
 } > "$RESULT_FILE"
@@ -1507,7 +1518,7 @@ else
   printf 'Enabled: yes\n'
   printf 'Allow private address: no\n'
   printf 'TLS verification: Verify (default CA)\n'
-  printf 'API Token: %s\n' "$PANEL_API_TOKEN"
+  printf 'API Token: %s\n' "$NODE_API_TOKEN"
   printf '%b---------------------------------------------------------------%b\n' "$yellow" "$plain"
   printf '%bIn the main panel:%b Nodes → Add node. Fill in the fields above; leave Remark empty.\n\n' "$cyan" "$plain"
 fi

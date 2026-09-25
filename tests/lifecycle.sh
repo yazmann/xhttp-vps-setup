@@ -9,6 +9,11 @@ xhttp_valid_ipv4 0.0.0.0
 if xhttp_valid_ipv4 256.1.1.1; then exit 1; fi
 if xhttp_valid_ipv4 1.2.3; then exit 1; fi
 if xhttp_valid_ipv4 '1.2.3.4 extra'; then exit 1; fi
+xhttp_validate_single_dns_ipv4 203.0.113.7 <<<'203.0.113.7'
+xhttp_validate_single_dns_ipv4 203.0.113.7 <<<$'203.0.113.7\n203.0.113.7'
+if xhttp_validate_single_dns_ipv4 203.0.113.7 <<<$'203.0.113.7\n198.51.100.2'; then exit 1; fi
+if xhttp_validate_single_dns_ipv4 203.0.113.7 <<<'198.51.100.2'; then exit 1; fi
+if xhttp_validate_single_dns_ipv4 203.0.113.7 <<<$'origin.example.\n203.0.113.7'; then exit 1; fi
 
 [[ "$(xhttp_transport_flow vision)" == xtls-rprx-vision ]]
 [[ -z "$(xhttp_transport_flow xhttp)" ]]
@@ -29,6 +34,26 @@ vision_stream="$(xhttp_build_stream_settings vision example.com 127.0.0.1:9443 p
 jq -e '.network=="tcp" and .security=="reality" and .tcpSettings.header.type=="none" and .realitySettings.target=="127.0.0.1:9443" and .realitySettings.serverNames==["example.com"]' <<<"$vision_stream" >/dev/null
 xhttp_stream="$(xhttp_build_stream_settings xhttp example.com 127.0.0.1:9443 private public abcd)"
 jq -e '.network=="xhttp" and .security=="reality" and .xhttpSettings.mode=="auto" and .xhttpSettings.host=="example.com"' <<<"$xhttp_stream" >/dev/null
+damaged_inbound="$(jq -nc --arg settings '{"clients":[{"id":"preserved-client","enable":false}],"encryption":"none"}' \
+  --arg stream '{"network":"xhttp","security":"reality","xhttpSettings":{"host":"wrong.example","path":"/broken"},"realitySettings":{"target":"192.0.2.1:1","privateKey":"private","serverNames":["wrong.example"],"shortIds":["aa","bb"],"settings":{"publicKey":"public","fingerprint":"chrome"}}}' \
+  '{id:9,up:12,down:34,total:56,remark:"preserve me",enable:false,expiryTime:78,listen:"127.0.0.2",port:8443,protocol:"vless",settings:$settings,streamSettings:$stream,tag:"in-443-xhttp-reality",sniffing:"{\"enabled\":false}"}')"
+rebuilt_inbound="$(xhttp_rebuild_managed_inbound xhttp example.com 127.0.0.1:9443 in-443-xhttp-reality <<<"$damaged_inbound")"
+jq -e '
+  .id==9 and .up==12 and .down==34 and .total==56 and .remark=="preserve me" and .enable==false and .expiryTime==78
+  and .listen=="" and .port==443 and .protocol=="vless" and .tag=="in-443-xhttp-reality"
+  and ((.settings|fromjson).clients[0].id=="preserved-client")
+  and ((.streamSettings|fromjson) as $s | $s.network=="xhttp" and $s.xhttpSettings.host=="example.com"
+    and $s.xhttpSettings.path=="/" and $s.realitySettings.target=="127.0.0.1:9443"
+    and $s.realitySettings.privateKey=="private" and $s.realitySettings.settings.publicKey=="public"
+    and $s.realitySettings.shortIds==["aa","bb"])
+  and ((.sniffing|fromjson).enabled==true)
+' <<<"$rebuilt_inbound" >/dev/null
+rebuilt_vision="$(xhttp_rebuild_managed_inbound vision example.com 127.0.0.1:9443 in-443-vision-reality <<<"$damaged_inbound")"
+jq -e '
+  .enable==false and ((.settings|fromjson).clients[0].id=="preserved-client")
+  and ((.streamSettings|fromjson) as $s | $s.network=="tcp" and $s.tcpSettings.header.type=="none"
+    and $s.realitySettings.privateKey=="private" and $s.realitySettings.shortIds==["aa","bb"])
+' <<<"$rebuilt_vision" >/dev/null
 export MAINTENANCE_TIMEZONE=Europe/Moscow
 timer="$(xhttp_render_maintenance_timer)"
 grep -Fq 'OnCalendar=Sun *-*-* 05:00:00 Europe/Moscow' <<<"$timer"

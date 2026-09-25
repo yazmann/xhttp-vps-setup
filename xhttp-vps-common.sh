@@ -27,6 +27,20 @@ xhttp_valid_ipv4() {
   done
 }
 
+xhttp_validate_single_dns_ipv4() {
+  local expected="$1" value
+  local -a addresses=()
+  xhttp_valid_ipv4 "$expected" || return 1
+  while IFS= read -r value; do
+    value="${value//$'\r'/}"
+    [[ -z "$value" ]] && continue
+    xhttp_valid_ipv4 "$value" || return 1
+    addresses+=("$value")
+  done
+  mapfile -t addresses < <(printf '%s\n' "${addresses[@]}" | sed '/^$/d' | sort -u)
+  [[ ${#addresses[@]} -eq 1 && "${addresses[0]}" == "$expected" ]]
+}
+
 xhttp_transport_flow() {
   case "$1" in
     vision) printf '%s' 'xtls-rprx-vision' ;;
@@ -85,6 +99,54 @@ xhttp_build_stream_settings() {
       ;;
     *) return 1 ;;
   esac
+}
+
+xhttp_rebuild_managed_inbound() {
+  local transport="$1" domain="$2" target="$3" tag="$4"
+  local inbound settings stream private_key public_key short_ids short_id rebuilt_stream sniffing id
+  inbound="$(cat)"
+  id="$(jq -er '.id | select(type=="number" and .>0 and floor==.)' <<<"$inbound")" || return 1
+  settings="$(jq -ce '.settings | if type=="string" then fromjson else . end | select(type=="object")' <<<"$inbound")" || return 1
+  stream="$(jq -ce '.streamSettings | if type=="string" then fromjson else . end | select(type=="object")' <<<"$inbound")" || return 1
+  private_key="$(jq -er '.realitySettings.privateKey | select(type=="string" and length>0)' <<<"$stream")" || return 1
+  public_key="$(jq -er '.realitySettings.settings.publicKey | select(type=="string" and length>0)' <<<"$stream")" || return 1
+  short_ids="$(jq -ce '.realitySettings.shortIds | select(type=="array" and length>0 and all(.[]; type=="string" and length>0))' <<<"$stream")" || return 1
+  short_id="$(jq -r '.[0]' <<<"$short_ids")"
+  rebuilt_stream="$(xhttp_build_stream_settings "$transport" "$domain" "$target" "$private_key" "$public_key" "$short_id")" || return 1
+  rebuilt_stream="$(jq -ce --argjson ids "$short_ids" '.realitySettings.shortIds=$ids' <<<"$rebuilt_stream")" || return 1
+  sniffing='{"enabled":true,"destOverride":["http","tls","quic"],"metadataOnly":false,"routeOnly":false}'
+  jq -ce --argjson id "$id" --arg settings "$settings" --arg stream "$rebuilt_stream" \
+    --arg sniffing "$sniffing" --arg tag "$tag" '
+      .id=$id | .listen="" | .port=443 | .protocol="vless" | .settings=$settings
+      | .streamSettings=$stream | .tag=$tag | .sniffing=$sniffing
+    ' <<<"$inbound"
+}
+
+xhttp_rotate_node_sync_token() {
+  local token_name="${1:-xhttp-node-sync}" response ids id payload token
+  [[ "$token_name" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || return 1
+  response="$(xhttp_memory_api /panel/api/setting/apiTokens)" || return 1
+  ids="$(jq -ce --arg name "$token_name" '
+    .obj | if type=="string" then fromjson else . end
+    | select(type=="array")
+    | map(select(.name==$name and .scope=="node-sync") | .id)
+    | select(all(.[]; type=="number" and .>0 and floor==.))
+  ' <<<"$response")" || return 1
+  while IFS= read -r id; do
+    [[ "$id" =~ ^[0-9]+$ ]] || return 1
+    payload='{"expectedScope":"node-sync"}'
+    xhttp_memory_api "/panel/api/setting/apiTokens/delete/$id" -X POST \
+      -H 'Content-Type: application/json' --data-binary "$payload" >/dev/null || return 1
+  done < <(jq -r '.[]' <<<"$ids")
+  payload="$(jq -nc --arg name "$token_name" '{name:$name,scope:"node-sync",expiresAt:0}')"
+  response="$(xhttp_memory_api /panel/api/setting/apiTokens/create -X POST \
+    -H 'Content-Type: application/json' --data-binary "$payload")" || return 1
+  token="$(jq -er '
+    .obj | if type=="string" then fromjson else . end
+    | select(.scope=="node-sync" and .enabled==true)
+    | .token | select(type=="string" and length>=32)
+  ' <<<"$response")" || return 1
+  printf '%s' "$token"
 }
 
 xhttp_validate_authorized_keys_b64() (

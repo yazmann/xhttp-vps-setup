@@ -50,6 +50,7 @@ xhttp_memory_apply() (
   set -Eeuo pipefail
   umask 077
   local response template inbound updated_template updated_inbound backup_dir id test_url transport
+  local changes_started=0
   local target_tag="${1:-in-443-xhttp-reality}"
   transport="${2:-xhttp}"
   [[ "$transport" == xhttp || "$transport" == vision ]] || {
@@ -91,7 +92,32 @@ xhttp_memory_apply() (
   # SQLite online backup includes committed WAL data, unlike cp of x-ui.db.
   sqlite3 /etc/x-ui/x-ui.db ".timeout 5000" ".backup '$backup_dir/x-ui.db'"
   printf 'Backup: %s\nApplying memory profile; active connections may reconnect.\n' "$backup_dir"
-  trap 'printf "Memory update failed. Original API payloads and database: %s\n" "$backup_dir" >&2' ERR
+  xhttp_memory_rollback() {
+    local status="$1" rollback_failed=0
+    trap - ERR
+    set +e
+    if [[ "$changes_started" == 1 ]]; then
+      printf 'Memory update failed; restoring the original panel configuration.\n' >&2
+      xhttp_memory_api /panel/api/xray/update -X POST \
+        --data-urlencode "xraySetting=$template" \
+        --data-urlencode "outboundTestUrl=$test_url" >/dev/null || rollback_failed=1
+      if [[ "$transport" == xhttp ]]; then
+        xhttp_memory_api "/panel/api/inbounds/update/$id" -X POST \
+          -H 'Content-Type: application/json' --data-binary "$inbound" >/dev/null || rollback_failed=1
+      fi
+      xhttp_memory_api /panel/api/server/restartXrayService -X POST >/dev/null || rollback_failed=1
+    fi
+    if [[ "$rollback_failed" == 0 && "$changes_started" == 1 ]]; then
+      printf 'Rollback completed. Original API payloads and database backup: %s\n' "$backup_dir" >&2
+    else
+      printf 'Automatic rollback could not be confirmed. Original API payloads and database backup: %s\n' "$backup_dir" >&2
+    fi
+    exit "$status"
+  }
+  trap 'xhttp_memory_rollback "$?"' ERR
+  # Assume the first write may have reached the panel even if its response is
+  # interrupted; rollback is safe when the panel did not mutate anything.
+  changes_started=1
   xhttp_memory_api /panel/api/xray/update -X POST \
     --data-urlencode "xraySetting=$updated_template" \
     --data-urlencode "outboundTestUrl=$test_url" >/dev/null
@@ -116,6 +142,7 @@ xhttp_memory_apply() (
     ' <<<"$response" >/dev/null
   fi
   xhttp_memory_api /panel/api/server/restartXrayService -X POST >/dev/null
+  trap - ERR
   if [[ "$transport" == xhttp ]]; then
     printf 'Saved and verified: bufferSize=64 KiB, connIdle=180 s, XMUX pool=1.\n'
     printf 'Refresh subscriptions and reconnect clients. This mitigates memory pressure; it does not prove an upstream leak is fixed.\n'

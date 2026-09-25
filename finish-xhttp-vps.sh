@@ -62,6 +62,7 @@ fi
 : "${ADMIN_USER:=root}"
 : "${ADMIN_KEYS_B64:=}"
 : "${ADMIN_KEY_FINGERPRINTS:=}"
+: "${NODE_API_TOKEN:=}"
 case "$TRANSPORT" in vision|xhttp) ;; *) die "State contains an invalid transport: ${TRANSPORT}" ;; esac
 case "$PANEL_ACCESS_MODE" in
   private|public) ;;
@@ -255,18 +256,14 @@ if [[ -z "$EXISTING_INBOUND" ]] && jq -e 'any(.port==443)' <<<"$INBOUNDS" >/dev/
   die "TCP/443 is occupied by an unmanaged inbound; recovery will not overwrite it."
 fi
 if [[ -n "$EXISTING_INBOUND" ]]; then
-  # Recovery must not reset live quotas, enable state or REALITY identities.
-  # Use the dedicated memory updater for tuning a functioning installation.
-  INBOUND_ID="$(jq -r '.id' <<<"$EXISTING_INBOUND")"
-  IS="$(jq -c '.settings|if type=="string" then fromjson else . end' <<<"$EXISTING_INBOUND")"
-  EXISTING_STREAM="$(jq -c '.streamSettings|if type=="string" then fromjson else . end' <<<"$EXISTING_INBOUND")"
-  PRIV_R="$(jq -r '.realitySettings.privateKey // empty' <<<"$EXISTING_STREAM")"
-  PUB_R="$(jq -r '.realitySettings.settings.publicKey // empty' <<<"$EXISTING_STREAM")"
-  SID="$(jq -r '(.realitySettings.shortIds // [])[0] // empty' <<<"$EXISTING_STREAM")"
-  [[ -n "$PRIV_R" && -n "$PUB_R" && -n "$SID" ]] \
-    || die "Existing inbound has incomplete REALITY keys/short IDs. Restore its original settings; recovery will not rotate client credentials."
-  # Never recreate a client removed by the administrator on an existing inbound.
-  IB="$(jq -c --arg s "$IS" '.settings=$s' <<<"$EXISTING_INBOUND")"
+  # Rebuild only installer-owned transport fields. Quotas, clients, enable state,
+  # counters, REALITY identities and every short ID remain untouched.
+  IB="$(xhttp_rebuild_managed_inbound "$TRANSPORT" "$DOMAIN" "127.0.0.1:${FALLBACK_PORT}" "$INBOUND_TAG" <<<"$EXISTING_INBOUND")" \
+    || die "Existing inbound has invalid settings or incomplete REALITY identities. Recovery will not rotate client credentials."
+  INBOUND_ID="$(jq -r '.id' <<<"$IB")"
+  EXISTING_STREAM="$(jq -c '.streamSettings|fromjson' <<<"$IB")"
+  PUB_R="$(jq -r '.realitySettings.settings.publicKey' <<<"$EXISTING_STREAM")"
+  SID="$(jq -r '.realitySettings.shortIds[0]' <<<"$EXISTING_STREAM")"
   R="$(curl -kfsS "${API_AUTH[@]}" -H 'Content-Type: application/json' -X POST "$API_BASE/panel/api/inbounds/update/${INBOUND_ID}" --data-binary "$IB")"
   jq -e '.success==true' <<<"$R" >/dev/null || die "Inbound repair failed: $R"
   REALITY_PUBLIC="$PUB_R"; SHORT_ID="$SID"
@@ -347,6 +344,12 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 [[ "$READY" -eq 1 ]] || die "Private bearer API failed after the final restart. Last response: ${R:-<empty>}"
+if [[ "$INSTALL_MODE" == "node" && -z "${NODE_API_TOKEN:-}" ]]; then
+  CURRENT_STEP='creating a least-privilege node-sync API token'
+  NODE_API_TOKEN="$(xhttp_rotate_node_sync_token xhttp-node-sync)" \
+    || die "Could not create the restricted node-sync API token. The local administrator token was not exported."
+  printf '\nNODE_API_TOKEN=%q\n' "$NODE_API_TOKEN" >> "${STATE_FILES[0]}"
+fi
 INBOUND_OK=0; CLIENT_OK=0; SUB_OK=0; SELF_STEAL_OK=0; ROUTING_OK=0; MIHOMO_OK=0
 R="$(curl -kfsS "${API_AUTH[@]}" "$API_BASE/panel/api/inbounds/list" || true)"
 if jq -e --arg d "$DOMAIN" --arg t "127.0.0.1:${FALLBACK_PORT}" --arg transport "$TRANSPORT" --arg tag "$INBOUND_TAG" '
@@ -483,6 +486,7 @@ if [[ "$INSTALL_MODE" == "standalone" ]]; then
   if [[ "$ROUTING_OK" -eq 1 ]]; then report "HAPP + INCY routing" OK; else report "HAPP + INCY routing" ERROR; fi
   if [[ "$MIHOMO_OK" -eq 1 ]]; then report "Mihomo subscription" OK; else report "Mihomo subscription" ERROR; fi
 else
+  if [[ -n "${NODE_API_TOKEN:-}" ]]; then report "Node-sync API token" OK; else report "Node-sync API token" ERROR; fi
   report "First VLESS client" SKIP
   report "Client subscription URL" SKIP
   report "HAPP + INCY routing" SKIP
@@ -546,7 +550,7 @@ if [[ "$INSTALL_MODE" == "standalone" && -n "${CLIENT_UUID:-}" && -n "${CLIENT_S
   printf '  %bMihomo:%b      %s\n' "$yellow" "$plain" "$MIHOMO_ROUTING_URL"
   printf '  %bRouting:%b     HAPP and INCY RoscomVPN routing profiles are included.\n\n' "$yellow" "$plain"
 fi
-if [[ "$INSTALL_MODE" == "node" && -n "${PANEL_API_TOKEN:-}" ]]; then printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "$PANEL_API_TOKEN"; fi
+if [[ "$INSTALL_MODE" == "node" && -n "${NODE_API_TOKEN:-}" ]]; then printf '%bNODE API TOKEN:%b %s\n\n' "$cyan" "$plain" "$NODE_API_TOKEN"; fi
 if [[ "$PANEL_ACCESS_MODE" == "private" ]]; then
   printf '%bSSH tunnel:%b ssh -p %s -L %s:127.0.0.1:%s %s@%s\n' "$cyan" "$plain" "$SSH_PORT" "$PANEL_PORT" "$PANEL_PORT" "$ADMIN_USER" "$DOMAIN"
   printf '%bMobile:%b create the same local-port forwarding in Termius, or use private Tailscale Serve.\n\n' "$cyan" "$plain"

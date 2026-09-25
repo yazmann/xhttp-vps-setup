@@ -65,7 +65,10 @@ xhttp_memory_api() {
       done
       printf '{"success":true}\n';;
     /panel/api/inbounds/update/7)
-      [[ "${fail_update:-0}" != 1 ]] || return 1
+      if [[ "${fail_update:-0}" == 1 && ! -e "$test_dir/fail-once" ]]; then
+        touch "$test_dir/fail-once"
+        return 1
+      fi
       while (( $# )); do
         if [[ "$1" == --data-binary ]]; then printf '%s\n' "$2" > "$test_dir/inbound"; break; fi
         shift
@@ -86,6 +89,8 @@ printf '%s\n' "$original_inbound" > "$test_dir/inbound"
 export test_dir fail_update=1 API_BASE
 export -f xhttp_memory_apply xhttp_memory_api xhttp_memory_policy xhttp_memory_inbound mktemp sqlite3
 if bash -c 'xhttp_memory_apply' > "$test_dir/error" 2>&1; then exit 1; fi
-if grep -q '/panel/api/server/restartXrayService' "$test_dir/calls"; then exit 1; fi
-grep -q 'Original API payloads and database' "$test_dir/error"
+[[ "$(jq -Sc . "$test_dir/template")" == "$(jq -Sc . <<<"$original")" ]]
+[[ "$(jq -Sc . "$test_dir/inbound")" == "$(jq -Sc . <<<"$original_inbound")" ]]
+grep -q '/panel/api/server/restartXrayService' "$test_dir/calls"
+grep -q 'Rollback completed' "$test_dir/error"
 printf 'Memory profile tests passed.\n'

@@ -21,11 +21,14 @@ jobs:
           bash -n tests/memory-profile.sh
           bash -n xhttp-vps-common.sh
           bash -n tests/lifecycle.sh
+          bash -n tests/api-tokens.sh
           bash -n tests/fake-xray.sh
       - name: Test memory profile preservation and idempotence
         run: bash tests/memory-profile.sh
       - name: Test routing, ownership and traffic probe configs
         run: bash tests/lifecycle.sh
+      - name: Test least-privilege node token lifecycle
+        run: bash tests/api-tokens.sh
       - name: Check 3x-ui schema compatibility
         run: |
           if grep -Fq 'tgId:""' install-xhttp-vps.sh finish-xhttp-vps.sh; then
@@ -79,3 +82,23 @@ jobs:
         with:
           scandir: .
           severity: warning
+
+  supported-ubuntu:
+    name: Ubuntu ${{ matrix.ubuntu }}
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ matrix.ubuntu }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['22.04', '24.04']
+    steps:
+      - name: Install test dependencies
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash ca-certificates coreutils findutils git grep jq openssh-client sed sqlite3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check scripts and compatibility helpers
+        shell: bash
+        run: |
+          for script in *.sh tests/*.sh; do bash -n "$script"; done
+          bash tests/memory-profile.sh
+          bash tests/lifecycle.sh
+          bash tests/api-tokens.sh
