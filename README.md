@@ -23,7 +23,7 @@
 ```bash
 set -euo pipefail
 cd /root
-readonly REV='e212ee30065a5ca1ec0e7b7c5ddf478115f81f62'
+readonly REV='v0.5.0'
 base="https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/${REV}"
 curl -fsSLO "$base"/{install-xhttp-vps.sh,finish-xhttp-vps.sh,optimize-xhttp-memory.sh,xhttp-vps-common.sh}
 printf '%s\n' \
