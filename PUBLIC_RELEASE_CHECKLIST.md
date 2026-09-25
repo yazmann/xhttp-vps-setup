@@ -6,7 +6,7 @@
 
 **Описание**
 
-> Установщик 3x-ui: VLESS/XHTTP/REALITY Self-steal с сайтом-заглушкой.
+> Установка VLESS (Vision/XHTTP + REALITY) на Ubuntu VPS.
 
 **Topics**
 
