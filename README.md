@@ -30,10 +30,23 @@
 Войдите на VPS как `root` и выполните:
 
 ```bash
-cd /root && curl -fsSLo install-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/install-xhttp-vps.sh && curl -fsSLo finish-xhttp-vps.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/finish-xhttp-vps.sh && curl -fsSLo optimize-xhttp-memory.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/optimize-xhttp-memory.sh && curl -fsSLo xhttp-vps-common.sh https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/main/xhttp-vps-common.sh && chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh optimize-xhttp-memory.sh xhttp-vps-common.sh && ./install-xhttp-vps.sh
+set -euo pipefail
+cd /root
+readonly REV='e212ee30065a5ca1ec0e7b7c5ddf478115f81f62'
+for file in install-xhttp-vps.sh finish-xhttp-vps.sh optimize-xhttp-memory.sh xhttp-vps-common.sh; do
+  curl -fsSLo "$file" "https://raw.githubusercontent.com/yazmann/xhttp-vps-setup/${REV}/${file}"
+done
+printf '%s\n' \
+  'a57bae37db62f4cd8f61008ce1219caf37de6f91d1561a34476a97ff812313dd  install-xhttp-vps.sh' \
+  '71cadfd1c5b487b33996958b8f1dfda525b16dcf491e3ffc72cd7b715d27564f  finish-xhttp-vps.sh' \
+  '6001886a100e88218d7de950d8078f7d6c72af5e49d102d53ab4b588dbbbeff1  optimize-xhttp-memory.sh' \
+  '5287fc164472f3310c30361bbd3e573d6c7efcd8cfb60e994d4c790026edc9c4  xhttp-vps-common.sh' \
+  | sha256sum -c -
+chmod 700 install-xhttp-vps.sh finish-xhttp-vps.sh optimize-xhttp-memory.sh xhttp-vps-common.sh
+./install-xhttp-vps.sh
 ```
 
-Команда скачивает актуальную версию из `main`. Стабильные версии после первого выпуска будут фиксироваться тегами и GitHub Releases.
+Команда скачивает одну проверенную ревизию и сверяет SHA-256 каждого root-скрипта до запуска. После первого выпуска стабильные версии также будут доступны через тег и GitHub Release.
 
 Скрипт показывает последствия каждого варианта прямо перед выбором. По умолчанию используются Vision, локальная панель и новый sudo-администратор с key-only SSH; прямой вход root и все SSH-пароли отключаются. После успешной установки выводится готовый блок с панелью и подписками либо с параметрами ноды. Те же данные сохраняются в защищённом файле `/root/xhttp-vps-result-*.txt`.
 
