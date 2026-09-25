@@ -2,7 +2,7 @@
 
 [← Краткая инструкция](../README.md)
 
-Установщик чистого Ubuntu VPS для VPN на базе [3x-ui](https://github.com/MHSanaei/3x-ui): VLESS + **REALITY Self-steal**, выбор TCP Vision или XHTTP и готовые подписки.
+Установщик чистого Ubuntu VPS для VPN на базе [3x-ui](https://github.com/MHSanaei/3x-ui): Vision и XHTTP — оба с **REALITY Self-steal**.
 
 ## Главное
 
@@ -133,7 +133,7 @@ WARP скрывает реальный выходной IP VPS от россий
 
 `Vision` — основной профиль: `network=tcp`, `flow=xtls-rprx-vision`, REALITY и локальный self-steal. Он рассчитан на максимальную пропускную способность и меньшее количество транспортных состояний.
 
-`XHTTP` — выбираемая альтернатива: `network=xhttp`, пустой `flow`, `mode=auto` и XMUX-профиль. Не добавляйте Vision flow к XHTTP: это другая схема транспорта. Одновременно создать оба профиля на одном IP:443 нельзя; выбор фиксируется в state-файле и recovery сохраняет его.
+`XHTTP` — выбираемая альтернатива с тем же локальным REALITY self-steal: `network=xhttp`, пустой `flow`, `mode=auto` и XMUX-профиль. Не добавляйте Vision flow к XHTTP: это другая схема транспорта. Одновременно создать оба профиля на одном IP:443 нельзя; выбор фиксируется в state-файле и recovery сохраняет его.
 
 ## Обновления и перезагрузка
 

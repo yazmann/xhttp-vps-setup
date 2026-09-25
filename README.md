@@ -1,11 +1,11 @@
 # Vision / XHTTP VPS setup
 
-Установка защищённого VLESS VPN на чистый Ubuntu VPS: TCP Vision или XHTTP с REALITY Self-steal.
+Установка VLESS VPN на Ubuntu VPS: Vision и XHTTP — оба с REALITY Self-steal.
 
 ## Что входит
 
 - 3x-ui и Xray-core: самостоятельный сервер или удалённая нода.
-- VLESS + REALITY на TCP/443 с выбором Vision или XHTTP.
+- Vision или XHTTP с REALITY Self-steal на TCP/443.
 - Nginx cover-site и сертификат Let's Encrypt.
 - UFW, Fail2ban, BBR, key-only SSH и обновления безопасности.
 - Подписки HAPP, INCY и Mihomo с правилами RoscomVPN.
